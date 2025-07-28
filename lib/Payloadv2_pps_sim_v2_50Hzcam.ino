@@ -1,37 +1,24 @@
 #include <LibPrintf.h>
 
 //------- PIN definitions--PIN means the pin of the port------------------------------
-#define POWER_LED 25        //POWER LED
-#define PPS_LED 26          //PPS LED
-#define RTK_LED 27          //RTK LED
-#define ERR_LED 28
-#define POWER_LED_PIN 3     //PORT A3
-#define PPS_LED_PIN 4       //PORT A4
-#define RTK_LED_PIN 5       //PORT A6
-#define ERR_LED_PIN 6       //PORT A6
-#define SIM_PPS_PIN 5       //PORT E5 ???????
-#define FLIR_SYNC_PIN 6     //PORT J6
-#define CAM_SYNC_PIN 5      //PORT E5
-#define JETSON_REC 24       //Jetson Force Recovery //SYNCN
-#define JETSON_RST 23       //Jetson Reset //SYNCP
-#define JETSON_PWR 22       //Jetson PWR   
-#define JETSON_REC_PIN 2    //Jetson Force Recovery //SYNCN PORT A2
-#define JETSON_RST_PIN 1    //Jetson Reset //SYNCP PORT A1
-#define JETSON_PWR_PIN 0    //Jetson PWR PORT A0  
-#define LEVEL_CNV_ENABLE A8   //Level converter0 enable 
-#define LEVEL_CNV1_ENABLE A9  //Level converter1 enable
-#define GPS_PPS_PIN 7         //PORT E7 INT7
-#define RTC_PPS_PIN 6         //PORT E6 INT6
-#define RTK_FIX_PIN 4         //PORT E4 INT4
-
-#define EXT_CNTRL1_PIN 0      //HUB Control input 1 PORT A0
-#define EXT_CNTRL2_PIN 1      //HUB Control input 2 PORT A1
-#define EXT_CNTRL3_PIN 2      //HUB Control input 3 PORT A2
-#define EXT_CNTRL4_PIN 3      //HUB Control input 4 PORT A3
-
-#define PPS_MUX 64            //PK2 LOW
-
-
+#define POWER_LED A1    //POWER LED
+#define PPS_LED A2      //PPS LED
+#define RTK_LED A3      //RTK LED
+#define POWER_LED_PIN 1    //PORTF
+#define PPS_LED_PIN 2      //PORTF
+#define RTK_LED_PIN 3      //PORTF
+#define SIM_PPS_PIN 5   //PORTJ PJ5
+#define FLIR_SYNC_PIN 4 //PORTJ PJ4
+#define CAM_SYNC_PIN 3  //PORTJ PJ3
+#define JETSON_REC 27   //Jetson Force Recovery //SYNCN
+#define JETSON_RST 26   //Jetson Reset //SYNCP
+#define JETSON_PWR 25   //Jetson PWR   
+#define JETSON_REC_PIN 5   //Jetson Force Recovery //SYNCN PORTA
+#define JETSON_RST_PIN 4   //Jetson Reset //SYNCP PORTA
+#define JETSON_PWR_PIN 3   //Jetson PWR PORTA  
+#define LEVEL_CNV_ENABLE 53 //Level converter enable 
+#define GPS_PPS_PIN 0 //PORT K ADC8 PC INT16   (USE PINK to work)
+#define RTC_PPS_PIN 1 //PORT K ADC9 PC INT17   (USE PINK to work)
 
 //Efficient port set/clear functions ----Does not work for analog pins-----------------
 #define CLR(x,y) (x&=(~(1<<y)))
@@ -49,8 +36,7 @@ int pps_width_count = 0;  // used to control the pulse width of pps_sim
 bool flag_pps_sim_high = false; // stores the current pps sim signal value
 bool flag_cam_sim_high = false; // stores the current cam signal value
 bool flag_write_serial = false; // used to control serial write to Jetson
-unsigned int preload_hi = 57536; //4ms
-unsigned int preload_lo = 33536; //16ms;
+unsigned int preload = 25536;
 unsigned int max_val = 65535;
 int cam_pps_preload =0;
 int cam_pps_correction =0;
@@ -103,57 +89,47 @@ void setup() {
 
   // set input output
   pinMode(LEVEL_CNV_ENABLE, OUTPUT);  //Level converter (TXS0108E) output enable (Low = High Impedence)
-  pinMode(LEVEL_CNV1_ENABLE, OUTPUT);
   pinMode(PPS_LED, OUTPUT);  // Green LED
   pinMode(RTK_LED, OUTPUT);  // Red LED
   pinMode(POWER_LED, OUTPUT);  // Yellow LED
-  pinMode(ERR_LED, OUTPUT);
   pinMode(JETSON_REC, OUTPUT);   //Jetson Force Recovery
   pinMode(JETSON_RST, OUTPUT);   //Jetson RST
   pinMode(JETSON_PWR, OUTPUT);   //Jetson PWR
-  pinMode(PPS_MUX, OUTPUT); 
 
   // Set using DDR regiter for non mapped pins
-  SET(DDRE,SIM_PPS_PIN);   //PORTJ PJ5
+  SET(DDRJ,SIM_PPS_PIN);   //PORTJ PJ5
   SET(DDRJ,FLIR_SYNC_PIN); //PORTJ PJ4
-  SET(DDRE,CAM_SYNC_PIN); //PORTJ PJ3
-  SET(DDRF,EXT_CNTRL1_PIN);
-  SET(DDRF,EXT_CNTRL2_PIN);
-  SET(DDRF,EXT_CNTRL3_PIN);
-  SET(DDRF,EXT_CNTRL4_PIN);
-  CLR(DDRE,GPS_PPS_PIN); //PORTJ PK0
-  CLR(DDRE,RTC_PPS_PIN); //PORTJ PK1
+  SET(DDRJ,CAM_SYNC_PIN); //PORTJ PJ3
+  CLR(DDRK,GPS_PPS_PIN); //PORTJ PK0
+  CLR(DDRK,RTC_PPS_PIN); //PORTJ PK1
   //DDRJ |= B00101000;  // Set using DDR regiter for non mapped pins
 
   // Startup devices
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
-  digitalWrite(LEVEL_CNV1_ENABLE,HIGH);
-  digitalWrite(PPS_MUX,LOW);
-  SET(PORTE,CAM_SYNC_PIN);
 
   //Serial ports
-  Serial1.begin(115200); // Jetson Communication
-  Serial.begin(38400); // GPS Reciever
+  Serial.begin(115200); // Jetson Communication
+  Serial1.begin(38400); // GPS Reciever
   Serial3.begin(38400); // GPS Reciever
 
   // Configure Timer 4 for 100Hz -  toggle achieves the cam trigger of 50 Hz
   noInterrupts();           // disable all interrupts
   TCCR4A = 0;               // disable compare capture A
   TCCR4B = 0;               // disable compare capture B
-  TCNT4 = preload_hi; //25536;            // preload timer 65536-16MHz/8/100Hz  - 50Hz overflow
+  TCNT4 = 25536;            // preload timer 65536-16MHz/8/100Hz  - 50Hz overflow
   TCCR4B |= (1 << CS41);    // PS 8 prescaler :Timer resolution 1/16e6*PS
   TIMSK4 |= (1 << TOIE4);   // enable timer overflow interrupt
   interrupts();             // enable all interrupts
 
 
   //Masked External interrupt (GPS)  PCINT 16
-  //PCICR |= B00000100; // Pin change interrupt 1 enabled (PCINT15:8)
-  //PCMSK2 |= B00000001; // Specify which pin is enabled (PCINT16 and 17)
+  PCICR |= B00000100; // Pin change interrupt 1 enabled (PCINT15:8)
+  PCMSK2 |= B00000001; // Specify which pin is enabled (PCINT16 and 17)
 
   //Enable eny external inturupts
-  EICRB |= B11000000;
-  EIMSK |= B10000000;
+  //EICRA |= B00001100;
+  //EIMSK |= B00000010;
   
 
   printf("test \n");
@@ -165,22 +141,12 @@ void loop() {
   //digitalWrite(JETSON_REC,HIGH);
   //digitalWrite(JETSON_RST,HIGH);
   if (flag_write_serial == true){
-      Serial1.write(value_2);
-      Serial1.write("%s%02d%02d%02d%s");
-      Serial1.write(gprmcSTR);
-      Serial1.write(hh);
-      Serial1.write(mm);
-      Serial1.write(ss);
-      Serial1.write(".00,A,2237.496474,N,11356.089515,E,0.0,225.5,230520,2.3,S,A*");
+      sprintf(value_2, "%s%02d%02d%02d%s", gprmcSTR, hh, mm, ss, ".00,A,2237.496474,N,11356.089515,E,0.0,225.5,230520,2.3,S,A*");
       strcpy(value_1,value_2);
       chckNum =checkNum(value_1);
-      Serial1.write(chckNumChar);
-      Serial1.write("%02X");
-      Serial1.write(chckNum);
-      Serial1.write("%s");
-      Serial1.write(value_2);
-      Serial1.write("%s\n");
-      Serial1.write(chckNumChar);
+      sprintf(chckNumChar, "%02X", chckNum);
+      printf("%s", value_2);
+      printf("%s\n", chckNumChar);
       //Serial.write("%s",value_2);
       //Serial.write("s%",chckNumChar);
       flag_write_serial = false;
@@ -215,14 +181,132 @@ void loop() {
     Serial.write(Serial3.read());
  }*/
 
-
-  
 }
 
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there
-ISR(INT7_vect) {
-  TOGGLE(PORTA,PPS_LED_PIN); 
+ISR(PCINT2_vect) {
+  //digitalWrite(RTK_LED,READ2(PORTK,GPS_PPS_PIN));
+  //digitalWrite(RTK_LED,!digitalRead(RTK_LED));
+  
+  //digitalWrite(RTK_LED,digitalRead(A8));
+  //digitalWrite(RTK_LED,READ2(PINK,GPS_PPS_PIN)); //read pin 0
+  if(READ2(PINK,GPS_PPS_PIN)){
+    SET(PORTF,RTK_LED_PIN);
+    // Coarse correction
+    // check PPSsim count 
+    gps_pulse_count_last = gps_pulse_count;
+    gps_pulse_count = 0;
+    cam_pps_correction = cam_pulse_count-50;    
+    
+    if(READ2(PORTJ,CAM_SYNC_PIN)){
+      //if not in sync tolerance(10 Hz i,e. 100 counts)   
+      gps_tmr_val_pre = gps_tmr_val_crr;   
+      gps_tmr_val_crr = long(TCNT4);
+      
+    }
+    else{
+      gps_tmr_val_pre = gps_tmr_val_crr;    
+      gps_tmr_val_crr = -long(TCNT4);
+      
+      //Serial.println(TCNT4);
+      //Serial.println(-65536+TCNT4);
+    }
+    // check if in range
+      if(gps_tmr_val_crr<long(preload) && gps_tmr_val_crr>long(-preload) ){
+        Serial.println("corrected...");
+        Serial.println(gps_tmr_val_crr);
+        Serial.println("corrected...");
+        gps_tmr_val_crr= gps_tmr_val_pre;   
+      }
+    // calculate coarse diff value - to do fix remaining quadrants
+    //and pulse count handling
+    if (gps_pulse_count_last==100){ // only fine tuning
+    if(gps_tmr_val_crr>=0 && gps_tmr_val_pre>=0){
+      phase_diff = gps_tmr_val_crr - gps_tmr_val_pre; }
+    if(gps_tmr_val_crr>=0 && gps_tmr_val_pre<0){
+      //phase_diff = -preload + gps_tmr_val_crr + gps_tmr_val_pre + 65535; }
+      phase_diff = phase_diff;} // skip overflow points
+    if(gps_tmr_val_crr<0 && gps_tmr_val_pre>=0){
+      //phase_diff = 65535 - gps_tmr_val_crr - gps_tmr_val_pre - preload; }
+      phase_diff = phase_diff;} // skip overflow points
+    if(gps_tmr_val_crr<0 && gps_tmr_val_pre<0){
+      phase_diff = -gps_tmr_val_crr + gps_tmr_val_pre; }  
+    }
+    else{
+         // go to nominal value  ?    
+    }
+
+    //FLOCK - check the phase diff for 5 cycles and then apply correction to preload
+    if(!flag_flock){
+      flock_count++;
+      phase_diff_corr += phase_diff;
+      if(flock_count>5){
+        phase_diff_corr = phase_diff_corr/500;
+        preload_flock = preload - phase_diff_corr;
+        preload= preload_flock;
+        flock_count =0;
+        flag_plock_ready = true;
+        //plock_amount = gps_tmr_val_crr;
+        //flag_flock= true;
+      }  
+    }
+  
+
+    // handle - phase diff lock
+    if(flag_plock_ready && gps_pulse_count_last ==100){
+      if(gps_tmr_val_crr < -max_val+2000){
+          preload= preload_flock +5;
+      }
+      else if(gps_tmr_val_crr < -max_val+1000){
+          preload= preload_flock +4;
+      }
+      else if(gps_tmr_val_crr < -max_val+30){
+          preload= preload_flock +1;
+      }
+      else{
+          preload= preload_flock;
+      }
+
+      if(gps_tmr_val_crr > preload+2000){
+          preload= preload_flock -5;      
+      }
+      else if(gps_tmr_val_crr > preload+1000){
+          preload= preload_flock -4;      
+      }
+      else if(gps_tmr_val_crr > preload+30){
+          preload= preload_flock -1;      
+      }
+      else{
+          preload= preload_flock;
+      }
+    }
+
+    // phase lock of simulated PPS
+    if(flag_plock_ready){
+      
+    }
+    
+    flag_write_serial2 =true;
+    // pseudo code for pps fine syncing
+    // 1. check the correct preload amount to use based on latest pps cycle.
+    // 2. do sanity check to make sure its not an outlier and report. 
+    // 3. check if the clock is ahead or behind
+    // 4. if its ahead above thresh slow down
+    // 5. if its lagging above thresh speed up
+    // 6. if its within tolerance set to latest pps period
+
+
+    // pseudo code for pps coarse syncing
+    // 1. Wait for  fine syncing
+    // 2. check the correct period amount (should be 100)
+    // 3. if its ahead above thresh slow down
+    // 5. if its lagging above thresh speed up
+    // 6. if its within tolerance set to latest pps period
+  }
+  else{
+    CLR(PORTF,RTK_LED_PIN);
+  }
 }
 
 // Inturupt service routine - timer overflow inturupt 100Hz
@@ -232,53 +316,57 @@ ISR(TIMER4_OVF_vect)        // interrupt service routine that wraps a user defin
   cam_pulse_count_for_GPRMC++;
   pps_width_count++;
   gps_pulse_count++;
-  flag_pps_sim_high = READ2(PORTE,CAM_SYNC_PIN);
-  //if(flag_pps_sim_high) CLR(PORTE,CAM_SYNC_PIN);
-  //else SET(PORTE,CAM_SYNC_PIN);
-  TOGGLE(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
+  flag_pps_sim_high = READ2(PORTJ,CAM_SYNC_PIN);
+  TOGGLE(PORTJ,CAM_SYNC_PIN); // 25Hz pulse width 50%
   flag_pps_sim_high = !flag_pps_sim_high;
-  if (flag_pps_sim_high){
-        TCNT4 = preload_hi;}
-  else{
-        TCNT4 = preload_lo;
+  TCNT4 = preload;
+
+ /* if(cam_pps_correction>40){
+      cam_pps_preload = -20;
   }
+  else if(cam_pps_correction>20){
+      cam_pps_preload = -10;
+  }
+  else if(cam_pps_correction>5){
+      cam_pps_preload = -3;
+  }
+  else if(cam_pps_correction<-40){
+      cam_pps_preload = 20;
+  }
+  else if(cam_pps_correction<-20){
+      cam_pps_preload = 10;
+  }
+  else if(cam_pps_correction<-5){
+      cam_pps_preload = 3;
+  }
+  else {
+       cam_pps_preload = 0;
+  }*/
 
-
-  if(cam_pulse_count>=cam_pps_preload+100 && flag_pps_sim_high){ //100 => 1s
-    //SET(PORTF,EXT_CNTRL1_PIN);
-    //digitalWrite(3,HIGH);
-    //SET(PORTE,SIM_PPS_PIN);
+  if(cam_pulse_count>=cam_pps_preload+50 && flag_pps_sim_high){ //50 => 1s
+    SET(PORTJ,SIM_PPS_PIN);
     SET(PORTA,JETSON_RST_PIN);
     CLR(PORTA,JETSON_REC_PIN);
-    SET(PORTF,EXT_CNTRL1_PIN);
-    SET(PORTF,EXT_CNTRL2_PIN);
-    SET(PORTF,EXT_CNTRL3_PIN);
-    SET(PORTF,EXT_CNTRL4_PIN);
     //digitalWrite(JETSON_RST,HIGH);
     //digitalWrite(JETSON_REC,LOW);
-    //digitalWrite(PPS_LED,HIGH); //IMU Sync LED on*/
+    digitalWrite(PPS_LED,HIGH); //IMU Sync LED on
     cam_pulse_count = 0;
     pps_width_count = 0;
     flag_pps_sim_high = true;
   }
 
-  if(flag_pps_sim_high && pps_width_count>=cam_pps_preload+38){  // 38=>38/2*0.02 =>380ms
-    //digitalWrite(3,LOW);
-    //CLR(PORTE,SIM_PPS_PIN);
+  if(flag_pps_sim_high && pps_width_count>=cam_pps_preload+19){  // 19 =>380ms
+    CLR(PORTJ,SIM_PPS_PIN);
     CLR(PORTA,JETSON_RST_PIN);
     SET(PORTA,JETSON_REC_PIN);
-    CLR(PORTF,EXT_CNTRL1_PIN);
-    CLR(PORTF,EXT_CNTRL2_PIN);
-    CLR(PORTF,EXT_CNTRL3_PIN);
-    CLR(PORTF,EXT_CNTRL4_PIN);
     //digitalWrite(JETSON_RST,LOW);
     //digitalWrite(JETSON_REC,HIGH);
-    //digitalWrite(PPS_LED,LOW); //IMU Sync LED on*/
+    digitalWrite(PPS_LED,LOW); //IMU Sync LED on
     pps_width_count = 0;
     flag_pps_sim_high = false;
   }
 
-  if(cam_pulse_count_for_GPRMC>=100 && flag_pps_sim_high){ //writes serial every second
+  if(cam_pulse_count_for_GPRMC>=50 && flag_pps_sim_high){ //writes serial every second
     if(ss<59){
       ss++;
 		}else{
@@ -296,13 +384,14 @@ ISR(TIMER4_OVF_vect)        // interrupt service routine that wraps a user defin
 		}
     cam_pulse_count_for_GPRMC=0; 
     flag_write_serial = true;
-    
+
 
     //PPS LOCK handling
-    //if(plock_ready){     
-    //}
+    /*if(plock_ready){
+        
+
+    }*/
   }
-  
 }
 
 unsigned char result;
@@ -341,8 +430,8 @@ void recvWithStartEndMarkers() {
     char endMarker = '\n';
     char rc;
 
-    while (Serial2.available() > 0 && newData == false) {
-        rc = Serial2.read();
+    while (Serial1.available() > 0 && newData == false) {
+        rc = Serial1.read();
 
         if (recvInProgress == true) {
             if (rc != endMarker) {
@@ -398,12 +487,12 @@ void parseData() {      // split the data into its parts
         crc_recv = strtol(crc_str, NULL, 16);
         if(crc_recv!=crc_calc){
           memset(messageFromPC, 0,strlen(messageFromPC));
-          Serial1.write("Checksum error");
+          Serial.println("Checksum error");
           } 
         }
         else{
           memset(messageFromPC, 0,strlen(messageFromPC));   
-          Serial1.write("No * in NMEA");
+          Serial.println("No * in NMEA");
         }
     }
     else{
@@ -412,7 +501,7 @@ void parseData() {      // split the data into its parts
         strcat(messageFromPC, ",");
         strtokIndx = strtok(NULL, "\n");
         strcat(messageFromPC, strtokIndx); 
-        Serial1.write(messageFromPC);
+        Serial.println(messageFromPC);
         memset(messageFromPC, 0,strlen(messageFromPC));
       }
       else {
@@ -433,7 +522,7 @@ void showParsedData() {
   if (strlen(messageFromPC)>0 && flag_send_next_nema){
     //Serial.print("Message ");
     //Serial2.println(messageFromPC);
-    Serial1.write(messageFromPC);
+    Serial.println(messageFromPC);
     //flag_send_next_nema = false;
     //flag_send_next_nema_delayed = true;
     //modifyNEMAData();
@@ -464,7 +553,7 @@ byte convertToCRC(char *buff) {
     }
   }
   else { // else if error, print a msg (to both ports)
-    Serial1.write("CRC ERROR");
+    Serial.println("CRC ERROR");
     //SERIALN.println("CRC ERROR");
   }
   return crc;
