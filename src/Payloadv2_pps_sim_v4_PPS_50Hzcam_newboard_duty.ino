@@ -171,7 +171,7 @@ void setup() {
   EIMSK |= B10000000;
   
   //SET(PORTE,CAM_SYNC_PIN);
-  SET(PORTF,EXT_CNTRL4_PIN); //HUB Power LED pin
+  SET(PORTF,EXT_CNTRL4_PIN); //HUB Power LED pin - now driving the Backlfy camera
 }
 
 // Loop functions
@@ -312,8 +312,9 @@ ISR(TIMER5_OVF_vect){
 
   if (flag_cam_high){
         TOGGLE(PORTF,EXT_CNTRL4_PIN);
-        TCNT5 = preload_hi;}
-  else{
+        TCNT5 = preload_hi;
+  }
+  else {
         //CLR(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
         TCNT5 = preload_lo;
   }

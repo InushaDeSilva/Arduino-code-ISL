@@ -55,7 +55,7 @@ unsigned int preload_flock = 0;
 bool flag_write_serial2 = false; 
 
 //Vars LVI_handhold MCU time to LiDAR via gprmc ---
-char gprmcSTR[7]="$GPRMC,";
+char gprmcSTR[8]="$GPRMC,";
 int chckNum=0;
 char chckNumChar[2];
 char value_1[100]="";
