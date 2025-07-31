@@ -251,6 +251,7 @@ ISR(INT7_vect) {
   CLR(PORTA,JETSON_PWR_PIN);
   SET(PORTF,EXT_CNTRL3_PIN);
   SET(PORTE,CAM_SYNC_PIN);
+  SET(PORTF,EXT_CNTRL2_PIN);
   SET(PORTF,EXT_CNTRL4_PIN);
   flag_pps_high = true;
   cam_pulse_count = 0; 
@@ -308,6 +309,7 @@ ISR(TIMER5_OVF_vect){
   
   flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTE,CAM_SYNC_PIN);
+  TOGGLE(PORTF,EXT_CNTRL2_PIN);
   flag_cam_high = !flag_cam_high;
 
   if (flag_cam_high){
@@ -324,6 +326,9 @@ ISR(TIMER5_OVF_vect){
     CLR(PORTA,JETSON_REC_PIN);
     CLR(PORTA,JETSON_PWR_PIN);
     SET(PORTF,EXT_CNTRL3_PIN);
+    SET(PORTE,CAM_SYNC_PIN);
+    SET(PORTF,EXT_CNTRL2_PIN);
+    SET(PORTF,EXT_CNTRL4_PIN);
     flag_pps_high = true;
     cam_pulse_count = 0; 
     pps_width_count = 0;
