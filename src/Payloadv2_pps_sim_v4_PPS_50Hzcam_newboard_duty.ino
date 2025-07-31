@@ -59,6 +59,10 @@ unsigned int max_val = 65535;
 int cam_pps_error =0;
 int cam_pps_correction =0;
 
+// FLIR 60Hz sync variables
+int flir_pulse_count = 0;   // Counter for 60Hz FLIR sync timing
+bool flag_flir_sync = false; // FLIR sync pulse state
+
 
 //variables for pps syncing
 unsigned int gps_pps_period = 0 ;
@@ -253,8 +257,10 @@ ISR(INT7_vect) {
   SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF,EXT_CNTRL2_PIN);
   SET(PORTF,EXT_CNTRL4_PIN);
+  SET(PORTJ, FLIR_SYNC_PIN);  // Initialize FLIR sync high
   flag_pps_high = true;
   cam_pulse_count = 0; 
+  flir_pulse_count = 0;  // Reset FLIR counter 
   pps_width_count = 0;
   if ( cam_pulse_count_for_GPRMC<100){
     sendDummyTime();
@@ -305,12 +311,32 @@ ISR(TIMER5_OVF_vect){
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
+  flir_pulse_count++;  // Increment FLIR counter
   //TCNT5 = 25536;
   
   flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTF,EXT_CNTRL2_PIN);
   flag_cam_high = !flag_cam_high;
+
+  // FLIR 60Hz sync logic - pulse every 83 ticks (100Hz/60Hz = 1.667, so 83.33)
+  // Using pattern: 83, 83, 84 to average 83.33 ticks per pulse
+  static int flir_pattern_count = 0;
+  int flir_trigger_count;
+
+  if (flir_pattern_count == 2) {
+    flir_trigger_count = 84;  // Every 3rd pulse uses 84 ticks
+    flir_pattern_count = 0;
+  }
+  else {
+    flir_trigger_count = 83;  // First two pulses use 83 ticks
+    flir_pattern_count++;
+  }
+
+  if (flir_pulse_count >= flir_trigger_count) {
+    TOGGLE(PORTJ, FLIR_SYNC_PIN);  // Generate 60Hz sync pulse for FLIR
+    flir_pulse_count = 0;
+  }
 
   if (flag_cam_high){
         TOGGLE(PORTF,EXT_CNTRL4_PIN);
@@ -329,8 +355,10 @@ ISR(TIMER5_OVF_vect){
     SET(PORTE,CAM_SYNC_PIN);
     SET(PORTF,EXT_CNTRL2_PIN);
     SET(PORTF,EXT_CNTRL4_PIN);
+    SET(PORTJ, FLIR_SYNC_PIN);  // Reset FLIR sync high
     flag_pps_high = true;
     cam_pulse_count = 0; 
+    flir_pulse_count = 0;  // Reset FLIR counter
     pps_width_count = 0;
   }
 
