@@ -11,7 +11,7 @@
 #define RTK_LED_PIN 5       //PORT A6
 #define ERR_LED_PIN 6       //PORT A6
 #define SIM_PPS_PIN 5       //PORT E5 ???????
-#define FLIR_SYNC_PIN 6     //PORT J6
+#define FLIR_BOZON_SYNC_PIN 6     //PORT J6
 #define CAM_SYNC_PIN 5      //PORT E5
 #define JETSON_REC 24       //Jetson Force Recovery //SYNCN
 #define JETSON_RST 23       //Jetson Reset //SYNCP
@@ -29,6 +29,9 @@
 #define EXT_CNTRL2_PIN 1      //HUB Control input 2 PORT A1
 #define EXT_CNTRL3_PIN 2      //HUB Control input 3 PORT A2
 #define EXT_CNTRL4_PIN 3      //HUB Control input 4 PORT A3
+
+// TEST PIN - REMOVE AFTER TESTING
+#define TEST_FLIR_PIN 5       //PORTF5 (Analog pin A5) - Mirror of FLIR_BOZON_SYNC_PIN for oscilloscope testing
 
 #define PPS_MUX 64            //PK2 LOW
 #define GNSS_MUX_EN 65        //PK3 LOW For Enable
@@ -52,12 +55,16 @@ int gps_pulse_count_last = 0 ;
 int pps_width_count = 0;  // used to control the pulse width of pps_sim
 bool flag_pps_high = false; // used to keep track of lidar pin state
 bool flag_cam_high = false; // used to keep track of camera pin state
+bool flag_flir_high = false; // used to keep track of FLIR BOZON sync pin state
 bool flag_write_serial = false; // used to control serial write to Jetson
 unsigned int preload_hi = 57570; //4ms: 57536 + 34 ticks compensation for interrupt overhead
 unsigned int preload_lo = 33570; //16ms: 33536 + 34 ticks compensation for interrupt overhead
+unsigned int preload_flir_hi = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle high phase  
+unsigned int preload_flir_lo = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle low phase
 unsigned int max_val = 65535;
 int cam_pps_error =0;
 int cam_pps_correction =0;
+int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 
 
 //variables for pps syncing
@@ -120,15 +127,16 @@ void setup() {
   pinMode(GNSS_MUX_SEL, OUTPUT);
 
   // Set using DDR regiter for non mapped pins
-  SET(DDRE,SIM_PPS_PIN);   //PORTJ PJ5
-  SET(DDRJ,FLIR_SYNC_PIN); //PORTJ PJ4
-  SET(DDRE,CAM_SYNC_PIN); //PORTJ PJ3
+  SET(DDRE,SIM_PPS_PIN);   //PORTE PE5
+  SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ6
+  SET(DDRE,CAM_SYNC_PIN); //PORTE PE5
   SET(DDRF,EXT_CNTRL1_PIN);
   SET(DDRF,EXT_CNTRL2_PIN);
   SET(DDRF,EXT_CNTRL3_PIN);
   SET(DDRF,EXT_CNTRL4_PIN);
-  CLR(DDRE,GPS_PPS_PIN); //PORTJ PK0
-  CLR(DDRE,RTC_PPS_PIN); //PORTJ PK1
+  SET(DDRF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Analog pin A5 for oscilloscope
+  CLR(DDRE,GPS_PPS_PIN); //PORTE PE7
+  CLR(DDRE,RTC_PPS_PIN); //PORTE PE6
   //DDRJ |= B00101000;  // Set using DDR regiter for non mapped pins
 
   // Startup devices
@@ -172,6 +180,12 @@ void setup() {
   
   //SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF,EXT_CNTRL4_PIN); //HUB Power LED pin - now driving the Backlfy camera
+  
+  // Initialize FLIR BOZON sync pin high and start counting
+  SET(PORTJ,FLIR_BOZON_SYNC_PIN); // Start FLIR sync pin HIGH
+  SET(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Mirror for oscilloscope
+  flag_flir_high = true;
+  flir_pulse_count = 0;
 }
 
 // Loop functions
@@ -253,8 +267,12 @@ ISR(INT7_vect) {
   SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF,EXT_CNTRL2_PIN);
   SET(PORTF,EXT_CNTRL4_PIN);
+  SET(PORTJ,FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH on PPS
+  SET(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
   flag_pps_high = true;
+  flag_flir_high = true; // Reset FLIR sync state
   cam_pulse_count = 0; 
+  flir_pulse_count = 0; // Reset FLIR pulse counter
   pps_width_count = 0;
   if ( cam_pulse_count_for_GPRMC<100){
     sendDummyTime();
@@ -305,12 +323,20 @@ ISR(TIMER5_OVF_vect){
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
+  flir_pulse_count++; // Increment FLIR pulse counter
   //TCNT5 = 25536;
   
+  // Handle 50Hz camera sync (25Hz effective rate)
   flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTF,EXT_CNTRL2_PIN);
   flag_cam_high = !flag_cam_high;
+
+  // Handle 50Hz FLIR BOZON sync - EXACTLY like CAM_SYNC_PIN
+  // Simple toggle every interrupt = 100Hz/2 = 50Hz square wave
+  TOGGLE(PORTJ,FLIR_BOZON_SYNC_PIN);
+  TOGGLE(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  flag_flir_high = !flag_flir_high;
 
   if (flag_cam_high){
         TOGGLE(PORTF,EXT_CNTRL4_PIN);
@@ -329,8 +355,12 @@ ISR(TIMER5_OVF_vect){
     SET(PORTE,CAM_SYNC_PIN);
     SET(PORTF,EXT_CNTRL2_PIN);
     SET(PORTF,EXT_CNTRL4_PIN);
+    SET(PORTJ,FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH
+    SET(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
     flag_pps_high = true;
+    flag_flir_high = true; // Reset FLIR sync state
     cam_pulse_count = 0; 
+    flir_pulse_count = 0; // Reset FLIR counter
     pps_width_count = 0;
   }
 
