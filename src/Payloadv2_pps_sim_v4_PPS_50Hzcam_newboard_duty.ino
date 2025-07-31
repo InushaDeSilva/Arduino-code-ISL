@@ -332,20 +332,11 @@ ISR(TIMER5_OVF_vect){
   TOGGLE(PORTF,EXT_CNTRL2_PIN);
   flag_cam_high = !flag_cam_high;
 
-  // Handle 50Hz FLIR BOZON sync with reverse duty cycle (25% high, 75% low)
-  // High for 1 count, low for 3 counts in a 4-count cycle = 25Hz with 25% duty
-  if (flir_pulse_count % 4 == 0) {
-    // Start of cycle - go HIGH
-    SET(PORTJ,FLIR_BOZON_SYNC_PIN);
-    SET(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-    flag_flir_high = true;
-  } else if (flir_pulse_count % 4 == 1) {
-    // After 1 count - go LOW (stay low for 3 counts)
-    CLR(PORTJ,FLIR_BOZON_SYNC_PIN);
-    CLR(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-    flag_flir_high = false;
-  }
-  // For counts 2 and 3, stay LOW (no action needed)
+  // Handle 50Hz FLIR BOZON sync - EXACTLY like CAM_SYNC_PIN
+  // Simple toggle every interrupt = 100Hz/2 = 50Hz square wave
+  TOGGLE(PORTJ,FLIR_BOZON_SYNC_PIN);
+  TOGGLE(PORTF,TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  flag_flir_high = !flag_flir_high;
 
   if (flag_cam_high){
         TOGGLE(PORTF,EXT_CNTRL4_PIN);
