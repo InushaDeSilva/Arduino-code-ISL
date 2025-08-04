@@ -65,7 +65,6 @@ unsigned int max_val = 65535;
 int cam_pps_error = 0;
 int cam_pps_correction = 0;
 int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
-bool err_led_state = false; // tracks ERR LED state for 1s blinking
 
 
 //variables for pps syncing
@@ -378,9 +377,8 @@ ISR(TIMER5_OVF_vect) {
 
   if (cam_pulse_count_for_GPRMC >= 100) { //writes serial every second
     sendDummyTime();
-    // Toggle ERR LED every 1 second
-    err_led_state = !err_led_state;
-    digitalWrite(ERR_LED, err_led_state);
+    // Toggle RTK LED every 1 second - FOR TESTING ONLY, REMOVE AFTER TESTING
+    TOGGLE(PORTA, RTK_LED_PIN);
   }
 
 }
