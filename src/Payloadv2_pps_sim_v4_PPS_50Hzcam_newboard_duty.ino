@@ -5,11 +5,13 @@
  * DUAL TIMER CAMERA SYNCHRONIZATION SYSTEM
  * ==========================================
  * Timer4: FLIR_BOZON_SYNC_PIN at 60Hz (120Hz interrupt rate, toggle every interrupt)
- * Timer5: CAM_SYNC_PIN at 50Hz (100Hz interrupt rate, toggle every interrupt)
+ * Timer5: CAM_SYNC_PIN asymmetric timing (4ms HIGH / 16ms LOW for camera control)
  * Both timers synchronized to GPS PPS for absolute timing accuracy
- *
- * FLIR Timer4: 16MHz/8/120Hz = 52219 preload → 60Hz square wave
- * Camera Timer5: 16MHz/8/100Hz = 25536 preload → 50Hz square wave
+ * 
+ * FLIR Timer4: 16MHz/8/120Hz = 48869 preload → 60Hz square wave (CORRECTED)
+ * Camera Timer5: ORIGINAL asymmetric timing (preload_hi=4ms/preload_lo=16ms) - DO NOT CHANGE!
+ * 
+ * Timer Overflow Formula: TCNT = 65536 - (f_clk / (prescaler × f_overflow))
  */
 
 //------- PIN definitions--PIN means the pin of the port------------------------------
@@ -68,8 +70,8 @@ bool flag_pps_high = false; // used to keep track of lidar pin state
 bool flag_cam_high = false; // used to keep track of camera pin state
 bool flag_flir_high = false; // used to keep track of FLIR BOZON sync pin state
 bool flag_write_serial = false; // used to control serial write to Jetson
-unsigned int preload_hi = 57570; //4ms: 57536 + 34 ticks compensation for interrupt overhead
-unsigned int preload_lo = 33570; //16ms: 33536 + 34 ticks compensation for interrupt overhead
+unsigned int preload_hi = 57559; //4ms: 57536 + 23 ticks compensation for interrupt overhead
+unsigned int preload_lo = 33559; //16ms: 33536 + 23 ticks compensation for interrupt overhead
 unsigned int preload_flir_hi = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle high phase  
 unsigned int preload_flir_lo = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle low phase
 unsigned int max_val = 65535;
@@ -78,7 +80,10 @@ int cam_pps_correction = 0;
 int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 
 // Timer4 variables for FLIR 60Hz sync
-unsigned int preload_flir_timer4 = 52219; // 120Hz: 65536-16MHz/8/120Hz = 52219 (for 60Hz toggle)
+// CORRECTED CALCULATION: Timer clock = 16MHz/8 = 2MHz
+// For 60Hz output: need 120Hz interrupt = 2MHz/120Hz = 16,667 ticks
+// Preload = 65536 - 16,667 = 48,869 (was incorrectly 52,219 = 75Hz)
+unsigned int preload_flir_timer4 = 48885; // 120Hz: 65536-16MHz/8/120Hz = 48869 (for 60Hz toggle) ; 48869 + 16 ticks compensation
 int flir_pps_error = 0;
 int flir_pps_correction = 0;
 
@@ -174,18 +179,18 @@ void setup() {
   noInterrupts();           // disable all interrupts
 
   // Configure Timer4 for FLIR 120Hz - toggle achieves 60Hz FLIR sync
-  // Timer4: 16MHz/8/120Hz = 52219 preload value for precise 60Hz square wave
+  // Timer4: 16MHz/8/120Hz = 48869 preload value for precise 60Hz square wave
   TCCR4A = 0;               // disable compare capture A
   TCCR4B = 0;               // disable compare capture B
-  TCNT4 = preload_flir_timer4; // preload timer 65536-16MHz/8/120Hz = 52219 for 60Hz toggle
+  TCNT4 = preload_flir_timer4; // preload timer 65536-16MHz/8/120Hz = 48869 for 60Hz toggle
   TCCR4B |= (1 << CS41);    // PS 8 prescaler :Timer resolution 1/16e6*PS
   TIMSK4 |= (1 << TOIE4);   // enable timer overflow interrupt
 
   // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
-  // Timer5: 16MHz/8/100Hz = 45536 preload value for 50Hz camera sync
+  // Timer5: Uses asymmetric timing (preload_hi/preload_lo) for camera control
   TCCR5A = 0;               // disable compare capture A
   TCCR5B = 0;               // disable compare capture B
-  TCNT5 = 25536; //25536;            // preload timer 65536-16MHz/8/100Hz  - 50Hz overflow
+  TCNT5 = 25536; // asymmetric camera timing (4ms/16ms)
   TCCR5B |= (1 << CS51);    // PS 8 prescaler :Timer resolution 1/16e6*PS
   TIMSK5 |= (1 << TOIE5);   // enable timer overflow interrupt
   interrupts();             // enable all interrupts
@@ -302,7 +307,7 @@ ISR(INT7_vect) {
   cam_pulse_count_for_GPRMC = 0;
   cam_pps_error = max_val - TCNT5;
   flir_pps_error = max_val - TCNT4; // Get Timer4 error for FLIR sync
-  TCNT5 = preload_hi;
+  TCNT5 = preload_hi; // Use existing preload_hi for Timer5 asymmetric timing
   TCNT4 = preload_flir_timer4; // Reset Timer4 for FLIR sync
 
   //timer 5 rate adjustment
