@@ -1,6 +1,17 @@
 //#include <LibPrintf.h>
 #include <Arduino.h>
 
+/*
+ * DUAL TIMER CAMERA SYNCHRONIZATION SYSTEM
+ * ==========================================
+ * Timer4: FLIR_BOZON_SYNC_PIN at 60Hz (120Hz interrupt rate, toggle every interrupt)
+ * Timer5: CAM_SYNC_PIN at 50Hz (100Hz interrupt rate, toggle every interrupt)
+ * Both timers synchronized to GPS PPS for absolute timing accuracy
+ *
+ * FLIR Timer4: 16MHz/8/120Hz = 52219 preload → 60Hz square wave
+ * Camera Timer5: 16MHz/8/100Hz = 25536 preload → 50Hz square wave
+ */
+
 //------- PIN definitions--PIN means the pin of the port------------------------------
 #define POWER_LED 25        //POWER LED
 #define PPS_LED 26          //PPS LED
@@ -65,6 +76,11 @@ unsigned int max_val = 65535;
 int cam_pps_error = 0;
 int cam_pps_correction = 0;
 int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
+
+// Timer4 variables for FLIR 60Hz sync
+unsigned int preload_flir_timer4 = 52219; // 120Hz: 65536-16MHz/8/120Hz = 52219 (for 60Hz toggle)
+int flir_pps_error = 0;
+int flir_pps_correction = 0;
 
 
 //variables for pps syncing
@@ -154,14 +170,19 @@ void setup() {
   Serial.begin(115200); // Terminal
   Serial2.begin(38400); // GPS Reciever
 
-  // Configure Timer 4 for 100Hz -  toggle achieves the cam trigger of 50 Hz
+  // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
   noInterrupts();           // disable all interrupts
-  //TCCR4A = 0;               // disable compare capture A
-  //TCCR4B = 0;               // disable compare capture B
-  //TCNT4 = preload_hi; //25536;            // preload timer 65536-16MHz/8/100Hz  - 50Hz overflow
-  //TCCR4B |= (1 << CS41);    // PS 8 prescaler :Timer resolution 1/16e6*PS
-  //TIMSK4 |= (1 << TOIE4);   // enable timer overflow interrupt
 
+  // Configure Timer4 for FLIR 120Hz - toggle achieves 60Hz FLIR sync
+  // Timer4: 16MHz/8/120Hz = 52219 preload value for precise 60Hz square wave
+  TCCR4A = 0;               // disable compare capture A
+  TCCR4B = 0;               // disable compare capture B
+  TCNT4 = preload_flir_timer4; // preload timer 65536-16MHz/8/120Hz = 52219 for 60Hz toggle
+  TCCR4B |= (1 << CS41);    // PS 8 prescaler :Timer resolution 1/16e6*PS
+  TIMSK4 |= (1 << TOIE4);   // enable timer overflow interrupt
+
+  // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
+  // Timer5: 16MHz/8/100Hz = 45536 preload value for 50Hz camera sync
   TCCR5A = 0;               // disable compare capture A
   TCCR5B = 0;               // disable compare capture B
   TCNT5 = 25536; //25536;            // preload timer 65536-16MHz/8/100Hz  - 50Hz overflow
@@ -280,7 +301,9 @@ ISR(INT7_vect) {
   }
   cam_pulse_count_for_GPRMC = 0;
   cam_pps_error = max_val - TCNT5;
+  flir_pps_error = max_val - TCNT4; // Get Timer4 error for FLIR sync
   TCNT5 = preload_hi;
+  TCNT4 = preload_flir_timer4; // Reset Timer4 for FLIR sync
 
   //timer 5 rate adjustment
   Serial.println(cam_pps_error);
@@ -293,6 +316,19 @@ ISR(INT7_vect) {
   }
   else {
     cam_pps_correction = 0;
+  }
+
+  // Timer4 FLIR rate adjustment - similar to Timer5
+  Serial.print("FLIR PPS Error: ");
+  Serial.println(flir_pps_error);
+  if (flir_pps_error > 50) {
+    flir_pps_correction = 20; // adjust FLIR timer rate
+  }
+  else if (flir_pps_error < -50) {
+    flir_pps_correction = -20;
+  }
+  else {
+    flir_pps_correction = 0;
   }
 
 
@@ -324,7 +360,6 @@ ISR(TIMER5_OVF_vect) {
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
-  flir_pulse_count++; // Increment FLIR pulse counter
   //TCNT5 = 25536;
 
   // Handle 50Hz camera sync (25Hz effective rate)
@@ -332,12 +367,6 @@ ISR(TIMER5_OVF_vect) {
   TOGGLE(PORTE, CAM_SYNC_PIN);
   TOGGLE(PORTF, EXT_CNTRL2_PIN);
   flag_cam_high = !flag_cam_high;
-
-  // Handle 50Hz FLIR BOZON sync - EXACTLY like CAM_SYNC_PIN
-  // Simple toggle every interrupt = 100Hz/2 = 50Hz square wave
-  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-  TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-  flag_flir_high = !flag_flir_high;
 
   if (flag_cam_high) {
     TOGGLE(PORTF, EXT_CNTRL4_PIN);
@@ -356,15 +385,10 @@ ISR(TIMER5_OVF_vect) {
     SET(PORTE, CAM_SYNC_PIN);
     SET(PORTF, EXT_CNTRL2_PIN);
     SET(PORTF, EXT_CNTRL4_PIN);
-    SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH
-    SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
     flag_pps_high = true;
-    flag_flir_high = true; // Reset FLIR sync state
     cam_pulse_count = 0;
-    flir_pulse_count = 0; // Reset FLIR counter
     pps_width_count = 0;
   }
-
 
   if (flag_pps_high && pps_width_count >= 38) {
     CLR(PORTA, JETSON_RST_PIN);
@@ -380,7 +404,27 @@ ISR(TIMER5_OVF_vect) {
     // Toggle RTK LED every 1 second - FOR TESTING ONLY, REMOVE AFTER TESTING
     TOGGLE(PORTA, RTK_LED_PIN);
   }
+}
 
+// Timer4 ISR for FLIR BOZON 60Hz sync
+ISR(TIMER4_OVF_vect) {
+  flir_pulse_count++; // Increment FLIR pulse counter
+
+  // Handle 60Hz FLIR BOZON sync - simple toggle every interrupt = 120Hz/2 = 60Hz square wave
+  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+  TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  flag_flir_high = !flag_flir_high;
+
+  // Reset timer with preload for 120Hz (60Hz toggle rate)
+  TCNT4 = preload_flir_timer4;
+
+  // Reset FLIR counter every 120 interrupts (1 second at 120Hz)
+  if (flir_pulse_count >= 120) {
+    SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH
+    SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+    flag_flir_high = true; // Reset FLIR sync state
+    flir_pulse_count = 0; // Reset FLIR counter
+  }
 }
 
 void sendDummyTime() {
