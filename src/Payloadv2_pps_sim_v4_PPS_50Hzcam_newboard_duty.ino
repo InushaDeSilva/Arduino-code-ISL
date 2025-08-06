@@ -21,7 +21,7 @@
 #define ERR_LED 28
 #define POWER_LED_PIN 3     //PORT A3
 #define PPS_LED_PIN 4       //PORT A4
-#define RTK_LED_PIN 5       //PORT A6
+#define RTK_LED_PIN 5       //PORT A5
 #define ERR_LED_PIN 6       //PORT A6
 #define SIM_PPS_PIN 5       //PORT E5 ???????
 #define FLIR_BOZON_SYNC_PIN 6     //PORT J6
@@ -83,7 +83,7 @@ int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 // CORRECTED CALCULATION: Timer clock = 16MHz/8 = 2MHz
 // For 60Hz output: need 120Hz interrupt = 2MHz/120Hz = 16,667 ticks
 // Preload = 65536 - 16,667 = 48,869 (was incorrectly 52,219 = 75Hz)
-unsigned int preload_flir_timer4 = 48885; // 120Hz: 65536-16MHz/8/120Hz = 48869 (for 60Hz toggle) ; 48869 + 16 ticks compensation
+unsigned int preload_flir_timer4 = 48877; // 120Hz: 65536-16MHz/8/120Hz = 48869 (for 60Hz toggle) ; 48869 + 8 ticks compensation
 int flir_pps_error = 0;
 int flir_pps_correction = 0;
 
@@ -151,6 +151,7 @@ void setup() {
   SET(DDRE, SIM_PPS_PIN);   //PORTE PE5
   SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ6
   SET(DDRE, CAM_SYNC_PIN); //PORTE PE5
+  SET(DDRA, POWER_LED_PIN); //PORTA PA3 - POWER LED
   SET(DDRF, EXT_CNTRL1_PIN);
   SET(DDRF, EXT_CNTRL2_PIN);
   SET(DDRF, EXT_CNTRL3_PIN);
@@ -162,6 +163,7 @@ void setup() {
 
   // Startup devices
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
+  SET(PORTA, POWER_LED_PIN); // Turn on POWER LED solid using PORT register (PORTA3)
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV1_ENABLE, HIGH);
   digitalWrite(PPS_MUX, LOW);
