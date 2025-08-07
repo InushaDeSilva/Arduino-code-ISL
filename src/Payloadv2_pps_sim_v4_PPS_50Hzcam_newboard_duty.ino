@@ -87,6 +87,10 @@ unsigned int preload_flir_timer4 = 48877; // 120Hz: 65536-16MHz/8/120Hz = 48869 
 int flir_pps_error = 0;
 int flir_pps_correction = 0;
 
+// GPS PPS watchdog - to turn off EXT_CNTRL3_PIN if GPS PPS stops
+int gps_pps_timeout_count = 0;
+const int GPS_PPS_TIMEOUT_LIMIT = 150; // 1.5 seconds at 100Hz (150 * 10ms = 1500ms)
+
 
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
@@ -208,6 +212,8 @@ void setup() {
 
   //SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF, EXT_CNTRL4_PIN); //HUB Power LED pin - now driving the Backlfy camera
+  CLR(PORTF, EXT_CNTRL3_PIN); //Initialize GPS PPS indicator to OFF (will go HIGH only when GPS PPS received)
+  gps_pps_timeout_count = 0; // Initialize GPS PPS timeout counter
 
   // Initialize FLIR BOZON sync pin high and start counting
   SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Start FLIR sync pin HIGH
@@ -292,7 +298,7 @@ ISR(INT7_vect) {
   SET(PORTA, JETSON_RST_PIN);
   CLR(PORTA, JETSON_REC_PIN);
   CLR(PORTA, JETSON_PWR_PIN);
-  SET(PORTF, EXT_CNTRL3_PIN);
+  SET(PORTF, EXT_CNTRL3_PIN); // GPS PPS indicator ON - GPS is locked and PPS received
   SET(PORTE, CAM_SYNC_PIN);
   SET(PORTF, EXT_CNTRL2_PIN);
   SET(PORTF, EXT_CNTRL4_PIN);
@@ -303,6 +309,7 @@ ISR(INT7_vect) {
   cam_pulse_count = 0;
   flir_pulse_count = 0; // Reset FLIR pulse counter
   pps_width_count = 0;
+  gps_pps_timeout_count = 0; // Reset GPS PPS timeout counter - GPS is active
   if (cam_pulse_count_for_GPRMC < 100) {
     sendDummyTime();
   }
@@ -367,7 +374,14 @@ ISR(TIMER5_OVF_vect) {
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
+  gps_pps_timeout_count++; // Increment GPS PPS timeout counter
   //TCNT5 = 25536;
+
+  // GPS PPS watchdog - turn off EXT_CNTRL3_PIN if no GPS PPS for 1.5 seconds
+  if (gps_pps_timeout_count >= GPS_PPS_TIMEOUT_LIMIT) {
+    CLR(PORTF, EXT_CNTRL3_PIN); // Turn OFF GPS PPS indicator - GPS not locked/no PPS
+    gps_pps_timeout_count = GPS_PPS_TIMEOUT_LIMIT; // Prevent overflow
+  }
 
   // Handle 50Hz camera sync (25Hz effective rate)
   flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
