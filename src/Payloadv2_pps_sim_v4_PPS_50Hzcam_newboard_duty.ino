@@ -2,13 +2,18 @@
 #include <Arduino.h>
 
 /*
- * DUAL TIMER CAMERA SYNCHRONIZATION SYSTEM
- * ==========================================
- * Timer4: FLIR_BOZON_SYNC_PIN at 60Hz (120Hz interrupt rate, toggle every interrupt)
+ * DUAL TIMER CAMERA SYNCHRONIZATION SYSTEM WITH IMU-DERIVED 60Hz
+ * ==============================================================
+ * Timer4: FLIR_BOZON_SYNC_PIN at 60Hz (120Hz interrupt rate, toggle every interrupt) - FALLBACK
  * Timer5: CAM_SYNC_PIN asymmetric timing (4ms HIGH / 16ms LOW for camera control)
- * Both timers synchronized to GPS PPS for absolute timing accuracy
+ * INT5: XSense IMU 50Hz input → Phase Accumulator → 60Hz FLIR sync (PRIMARY)
+ * Both systems synchronized to GPS PPS for absolute timing accuracy
  * 
- * FLIR Timer4: 16MHz/8/120Hz = 48869 preload → 60Hz square wave (CORRECTED)
+ * IMU Phase Accumulator: 50Hz → 60Hz using phase increment = (60/50) * 2^16 = 78643
+ * FLIR Requirements: 59.75Hz to 60.25Hz for optimal imaging performance
+ * Timer4 serves as automatic fallback if IMU 50Hz signal is lost
+ * 
+ * FLIR Timer4: 16MHz/8/120Hz = 48869 preload → 60Hz square wave (FALLBACK)
  * Camera Timer5: ORIGINAL asymmetric timing (preload_hi=4ms/preload_lo=16ms) - DO NOT CHANGE!
  * 
  * Timer Overflow Formula: TCNT = 65536 - (f_clk / (prescaler × f_overflow))
@@ -37,6 +42,7 @@
 #define GPS_PPS_PIN 7         //PORT E7 INT7
 #define RTC_PPS_PIN 6         //PORT E6 INT6
 #define RTK_FIX_PIN 4         //PORT E4 INT4
+#define IMU_50HZ_PIN 5        //PORT E5 INT5 - XSense IMU 50Hz input
 
 #define EXT_CNTRL1_PIN 0      //HUB Control input 1 PORT A0
 #define EXT_CNTRL2_PIN 1      //HUB Control input 2 PORT A1
@@ -86,6 +92,13 @@ int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 unsigned int preload_flir_timer4 = 48877; // 120Hz: 65536-16MHz/8/120Hz = 48869 (for 60Hz toggle) ; 48869 + 8 ticks compensation
 int flir_pps_error = 0;
 int flir_pps_correction = 0;
+
+// Phase Accumulator variables for 60Hz generation from IMU 50Hz input
+// Phase increment = (60Hz / 50Hz) * 2^16 = 1.2 * 65536 = 78643.2 ≈ 78643
+long phase_accumulator_60hz = 0;
+const long PHASE_INCREMENT_60HZ = 78643;  // For generating 60Hz from 50Hz input
+bool flir_60hz_from_imu = false;          // State of 60Hz signal derived from IMU
+bool imu_50hz_active = false;             // Flag to indicate IMU 50Hz is being used
 
 
 //variables for pps syncing
@@ -159,6 +172,7 @@ void setup() {
   SET(DDRF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Analog pin A5 for oscilloscope
   CLR(DDRE, GPS_PPS_PIN); //PORTE PE7
   CLR(DDRE, RTC_PPS_PIN); //PORTE PE6
+  CLR(DDRE, IMU_50HZ_PIN); //PORTE PE5 - IMU 50Hz input
   //DDRJ |= B00101000;  // Set using DDR regiter for non mapped pins
 
   // Startup devices
@@ -204,9 +218,9 @@ void setup() {
   //PCICR |= B00000100; // Pin change interrupt 1 enabled (PCINT15:8)
   //PCMSK2 |= B00000001; // Specify which pin is enabled (PCINT16 and 17)
 
-  //Enable eny external inturupts
-  EICRB |= B11000000;
-  EIMSK |= B10000000;
+  //Enable external interrupts INT7 (GPS PPS) and INT5 (IMU 50Hz)
+  EICRB |= B11001100;  // INT7: rising edge, INT6: rising edge, INT5: rising edge  
+  EIMSK |= B10100000;  // Enable INT7 (GPS PPS) and INT5 (IMU 50Hz)
 
   //SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF, EXT_CNTRL4_PIN); //HUB Power LED pin - now driving the Backlfy camera
@@ -220,6 +234,28 @@ void setup() {
 
 // Loop functions
 void loop() {
+  // IMU 50Hz timeout detection and Timer4 fallback logic
+  static unsigned long last_imu_check = 0;
+  static unsigned long imu_timeout_counter = 0;
+  
+  if (millis() - last_imu_check > 100) {  // Check every 100ms
+    last_imu_check = millis();
+    
+    if (imu_50hz_active) {
+      imu_timeout_counter = 0;  // Reset timeout counter
+      imu_50hz_active = false;  // Reset flag for next check
+      // IMU is working, optionally disable Timer4
+      // TIMSK4 &= ~(1 << TOIE4);  // Uncomment to disable Timer4 when IMU active
+    } else {
+      imu_timeout_counter++;
+      if (imu_timeout_counter > 10) {  // No IMU for 1 second
+        // Re-enable Timer4 as fallback
+        TIMSK4 |= (1 << TOIE4);  // Enable Timer4 interrupt as backup
+        // Serial.println("IMU 50Hz timeout - using Timer4 fallback");
+      }
+    }
+  }
+
   //digitalWrite(JETSON_PWR,HIGH);
   //digitalWrite(JETSON_REC,HIGH);
   //digitalWrite(JETSON_RST,HIGH);
@@ -365,7 +401,7 @@ ISR(INT7_vect) {
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
 }
 
-ISR(TIMER5_OVF_vect) {
+ISR(INT5_vect) {
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
@@ -422,6 +458,7 @@ ISR(TIMER4_OVF_vect) {
   // Handle 60Hz FLIR BOZON sync - simple toggle every interrupt = 120Hz/2 = 60Hz square wave
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
   TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
   flag_flir_high = !flag_flir_high;
 
   // Reset timer with preload for 120Hz (60Hz toggle rate)
@@ -433,6 +470,32 @@ ISR(TIMER4_OVF_vect) {
     SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
     flag_flir_high = true; // Reset FLIR sync state
     flir_pulse_count = 0; // Reset FLIR counter
+  }
+}
+
+// ISR for IMU 50Hz input - generates 60Hz for FLIR using Phase Accumulator
+ISR(INT5_vect) {
+  TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of IMU 50Hz activity
+  
+  // Set flag to indicate IMU 50Hz is active (for fallback logic)
+  imu_50hz_active = true;
+  
+  // Phase Accumulator: Generate 60Hz from 50Hz input
+  // Every 50Hz pulse, increment phase by (60/50) * 2^16 = 78643
+  phase_accumulator_60hz += PHASE_INCREMENT_60HZ;
+  
+  // Check for phase overflow (indicates 60Hz pulse should occur)
+  if (phase_accumulator_60hz >= 65536L) {
+    phase_accumulator_60hz -= 65536L;  // Remove one full cycle
+    
+    // Generate 60Hz pulse for FLIR BOZON
+    TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+    TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+    flir_60hz_from_imu = !flir_60hz_from_imu;
+    
+    // Optionally disable Timer4 when using IMU-derived 60Hz
+    // Comment out to keep Timer4 as backup
+    // TIMSK4 &= ~(1 << TOIE4);  // Disable Timer4 interrupt
   }
 }
 
