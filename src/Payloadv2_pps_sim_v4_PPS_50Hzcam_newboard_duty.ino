@@ -27,7 +27,7 @@
 #define POWER_LED_PIN 3     //PORT A3
 #define PPS_LED_PIN 4       //PORT A4
 #define RTK_LED_PIN 5       //PORT A5
-#define ERR_LED_PIN 7       //PORT A7 - Arduino pin 28 (Fixed: was conflicting with JETSON_PWR_PIN)
+#define ERR_LED_PIN 6       //PORT A6
 #define SIM_PPS_PIN 5       //PORT E5 ???????
 #define FLIR_BOZON_SYNC_PIN 6     //PORT J6
 #define CAM_SYNC_PIN 5      //PORT E5
@@ -165,7 +165,7 @@ void setup() {
   SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ6
   SET(DDRE, CAM_SYNC_PIN); //PORTE PE5
   SET(DDRA, POWER_LED_PIN); //PORTA PA3 - POWER LED
-  SET(DDRA, ERR_LED_PIN); //PORTA PA7 - ERR LED for 50Hz debugging
+  SET(DDRA, ERR_LED_PIN); //PORTA PA6 - ERR LED for debugging
   SET(DDRF, EXT_CNTRL1_PIN);
   SET(DDRF, EXT_CNTRL2_PIN);
   SET(DDRF, EXT_CNTRL3_PIN);
