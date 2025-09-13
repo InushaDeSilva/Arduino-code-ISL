@@ -483,7 +483,7 @@ ISR(TIMER4_OVF_vect) {
   // Handle 60Hz FLIR BOZON sync - simple toggle every interrupt = 120Hz/2 = 60Hz square wave
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
   TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-  TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
+  // TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
   flag_flir_high = !flag_flir_high;
 
   // Reset timer with preload for 120Hz (60Hz toggle rate)
