@@ -402,6 +402,13 @@ ISR(INT7_vect) {
 }
 
 ISR(INT5_vect) {
+  // DEBUG: Visual indicator of IMU 50Hz activity
+  TOGGLE(PORTA, ERR_LED_PIN);
+  
+  // Set flag to indicate IMU 50Hz is active (for fallback logic)
+  imu_50hz_active = true;
+  
+  // Original camera sync functionality
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
@@ -449,6 +456,24 @@ ISR(INT5_vect) {
     // Toggle RTK LED every 1 second - FOR TESTING ONLY, REMOVE AFTER TESTING
     TOGGLE(PORTA, RTK_LED_PIN);
   }
+  
+  // NEW: Phase Accumulator for 60Hz FLIR generation from 50Hz IMU input
+  // Every 50Hz pulse, increment phase by (60/50) * 2^16 = 78643
+  phase_accumulator_60hz += PHASE_INCREMENT_60HZ;
+  
+  // Check for phase overflow (indicates 60Hz pulse should occur)
+  if (phase_accumulator_60hz >= 65536L) {
+    phase_accumulator_60hz -= 65536L;  // Remove one full cycle
+    
+    // Generate 60Hz pulse for FLIR BOZON
+    TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+    TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+    flir_60hz_from_imu = !flir_60hz_from_imu;
+    
+    // Optionally disable Timer4 when using IMU-derived 60Hz
+    // Comment out to keep Timer4 as backup
+    // TIMSK4 &= ~(1 << TOIE4);  // Disable Timer4 interrupt
+  }
 }
 
 // Timer4 ISR for FLIR BOZON 60Hz sync
@@ -470,32 +495,6 @@ ISR(TIMER4_OVF_vect) {
     SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
     flag_flir_high = true; // Reset FLIR sync state
     flir_pulse_count = 0; // Reset FLIR counter
-  }
-}
-
-// ISR for IMU 50Hz input - generates 60Hz for FLIR using Phase Accumulator
-ISR(INT5_vect) {
-  TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of IMU 50Hz activity
-  
-  // Set flag to indicate IMU 50Hz is active (for fallback logic)
-  imu_50hz_active = true;
-  
-  // Phase Accumulator: Generate 60Hz from 50Hz input
-  // Every 50Hz pulse, increment phase by (60/50) * 2^16 = 78643
-  phase_accumulator_60hz += PHASE_INCREMENT_60HZ;
-  
-  // Check for phase overflow (indicates 60Hz pulse should occur)
-  if (phase_accumulator_60hz >= 65536L) {
-    phase_accumulator_60hz -= 65536L;  // Remove one full cycle
-    
-    // Generate 60Hz pulse for FLIR BOZON
-    TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-    TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-    flir_60hz_from_imu = !flir_60hz_from_imu;
-    
-    // Optionally disable Timer4 when using IMU-derived 60Hz
-    // Comment out to keep Timer4 as backup
-    // TIMSK4 &= ~(1 << TOIE4);  // Disable Timer4 interrupt
   }
 }
 
