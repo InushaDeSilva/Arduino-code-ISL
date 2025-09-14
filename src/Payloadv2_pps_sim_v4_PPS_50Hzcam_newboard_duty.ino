@@ -2,19 +2,18 @@
 #include <Arduino.h>
 
 /*
- * DUAL TIMER CAMERA SYNCHRONIZATION SYSTEM WITH IMU-DERIVED 60Hz
- * ==============================================================
- * Timer4: FLIR_BOZON_SYNC_PIN at 60Hz (120Hz interrupt rate, toggle every interrupt) - FALLBACK
+ * DUAL CAMERA SYNCHRONIZATION SYSTEM WITH IMU-DERIVED 50Hz
+ * =========================================================
+ * Timer4: DISABLED (using direct IMU 50Hz sync instead)
  * Timer5: CAM_SYNC_PIN asymmetric timing (4ms HIGH / 16ms LOW for camera control)
- * INT5: XSense IMU 50Hz input → Phase Accumulator → 60Hz FLIR sync (PRIMARY)
+ * INT5: XSense IMU 50Hz input → Direct 50Hz FLIR sync + 25Hz camera sync
  * Both systems synchronized to GPS PPS for absolute timing accuracy
  * 
- * IMU Phase Accumulator: 50Hz → 60Hz using phase increment = (60/50) * 2^16 = 78643
- * FLIR Requirements: 59.75Hz to 60.25Hz for optimal imaging performance
- * Timer4 serves as automatic fallback if IMU 50Hz signal is lost
+ * FLIR BOZON: 50Hz sync directly from IMU interrupt (no jitter)
+ * Backfly Camera: 25Hz derived from IMU 50Hz using frequency divider
+ * Timer4 fallback system removed for simplicity and stability
  * 
- * FLIR Timer4: 16MHz/8/120Hz = 48869 preload → 60Hz square wave (FALLBACK)
- * Camera Timer5: ORIGINAL asymmetric timing (preload_hi=4ms/preload_lo=16ms) - DO NOT CHANGE!
+ * Timer5: ORIGINAL asymmetric timing (preload_hi=4ms/preload_lo=16ms) - DO NOT CHANGE!
  * 
  * Timer Overflow Formula: TCNT = 65536 - (f_clk / (prescaler × f_overflow))
  */
@@ -85,19 +84,15 @@ int cam_pps_error = 0;
 int cam_pps_correction = 0;
 int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 
-// Timer4 variables for FLIR 60Hz sync
-// CORRECTED CALCULATION: Timer clock = 16MHz/8 = 2MHz
-// For 60Hz output: need 120Hz interrupt = 2MHz/120Hz = 16,667 ticks
-// Preload = 65536 - 16,667 = 48,869 (was incorrectly 52,219 = 75Hz)
-unsigned int preload_flir_timer4 = 48877; // 120Hz: 65536-16MHz/8/120Hz = 48869 (for 60Hz toggle) ; 48869 + 8 ticks compensation
-int flir_pps_error = 0;
-int flir_pps_correction = 0;
+// Timer4 variables for FLIR 50Hz sync (DISABLED - using IMU 50Hz directly)
+// unsigned int preload_flir_timer4 = 48877; // Timer4 disabled
+// int flir_pps_error = 0;
+// int flir_pps_correction = 0;
 
-// Phase Accumulator variables for 60Hz generation from IMU 50Hz input
-// Phase increment = (60Hz / 50Hz) * 2^16 = 1.2 * 65536 = 78643.2 ≈ 78643
-long phase_accumulator_60hz = 0;
-const long PHASE_INCREMENT_60HZ = 78643;  // For generating 60Hz from 50Hz input
-bool flir_60hz_from_imu = false;          // State of 60Hz signal derived from IMU
+// Phase Accumulator variables (REMOVED - using direct 50Hz sync)
+// long phase_accumulator_60hz = 0;
+// const long PHASE_INCREMENT_60HZ = 78643;
+// bool flir_60hz_from_imu = false;
 bool imu_50hz_active = false;             // Flag to indicate IMU 50Hz is being used
 
 
@@ -197,13 +192,12 @@ void setup() {
   // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
   noInterrupts();           // disable all interrupts
 
-  // Configure Timer4 for FLIR 120Hz - toggle achieves 60Hz FLIR sync
-  // Timer4: 16MHz/8/120Hz = 48869 preload value for precise 60Hz square wave
-  TCCR4A = 0;               // disable compare capture A
-  TCCR4B = 0;               // disable compare capture B
-  TCNT4 = preload_flir_timer4; // preload timer 65536-16MHz/8/120Hz = 48869 for 60Hz toggle
-  TCCR4B |= (1 << CS41);    // PS 8 prescaler :Timer resolution 1/16e6*PS
-  TIMSK4 |= (1 << TOIE4);   // enable timer overflow interrupt
+  // Timer4 DISABLED - using direct IMU 50Hz sync for FLIR BOZON
+  // TCCR4A = 0;               // disable compare capture A
+  // TCCR4B = 0;               // disable compare capture B
+  // TCNT4 = preload_flir_timer4; // Timer4 disabled
+  // TCCR4B |= (1 << CS41);    // Timer4 disabled
+  // TIMSK4 |= (1 << TOIE4);   // Timer4 disabled
 
   // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
   // Timer5: Uses asymmetric timing (preload_hi/preload_lo) for camera control
@@ -235,7 +229,8 @@ void setup() {
 
 // Loop functions
 void loop() {
-  // IMU 50Hz timeout detection and Timer4 fallback logic
+  // Timer4 fallback logic DISABLED - using direct IMU 50Hz sync only
+  /*
   static unsigned long last_imu_check = 0;
   static unsigned long imu_timeout_counter = 0;
   
@@ -256,6 +251,7 @@ void loop() {
       }
     }
   }
+  */
 
   //digitalWrite(JETSON_PWR,HIGH);
   //digitalWrite(JETSON_REC,HIGH);
@@ -347,9 +343,9 @@ ISR(INT7_vect) {
   }
   cam_pulse_count_for_GPRMC = 0;
   cam_pps_error = max_val - TCNT5;
-  flir_pps_error = max_val - TCNT4; // Get Timer4 error for FLIR sync
+  // flir_pps_error = max_val - TCNT4; // Timer4 disabled - using direct IMU 50Hz sync
   TCNT5 = preload_hi; // Use existing preload_hi for Timer5 asymmetric timing
-  TCNT4 = preload_flir_timer4; // Reset Timer4 for FLIR sync
+  // TCNT4 = preload_flir_timer4; // Timer4 disabled
 
   //timer 5 rate adjustment
   Serial.println(cam_pps_error);
@@ -364,18 +360,9 @@ ISR(INT7_vect) {
     cam_pps_correction = 0;
   }
 
-  // Timer4 FLIR rate adjustment - similar to Timer5
-  Serial.print("FLIR PPS Error: ");
-  Serial.println(flir_pps_error);
-  if (flir_pps_error > 50) {
-    flir_pps_correction = 20; // adjust FLIR timer rate
-  }
-  else if (flir_pps_error < -50) {
-    flir_pps_correction = -20;
-  }
-  else {
-    flir_pps_correction = 0;
-  }
+  // Timer4 FLIR rate adjustment DISABLED - using direct IMU 50Hz sync
+  // Serial.print("FLIR PPS Error: ");
+  // Serial.println(flir_pps_error);
 
 
   //pulse Lidar
@@ -413,21 +400,30 @@ ISR(INT5_vect) {
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
-  //TCNT5 = 25536;
 
-  // Handle 50Hz camera sync (25Hz effective rate)
-  flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
-  TOGGLE(PORTE, CAM_SYNC_PIN);
-  flag_cam_high = !flag_cam_high;
+  // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
+  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+  TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
 
-  if (flag_cam_high) {
-    TOGGLE(PORTF, EXT_CNTRL4_PIN);
-    TOGGLE(PORTF, EXT_CNTRL2_PIN); // Mirror EXT_CNTRL4_PIN - visual representation of 50Hz Backfly signal
-    TCNT5 = preload_hi;
-  }
-  else {
-    //CLR(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
-    TCNT5 = preload_lo;
+  // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
+  static bool camera_divider = false;
+  camera_divider = !camera_divider;
+  
+  if (camera_divider) {
+    TOGGLE(PORTF, EXT_CNTRL4_PIN); // 25Hz Backfly camera signal
+    TOGGLE(PORTF, EXT_CNTRL2_PIN); // Mirror EXT_CNTRL4_PIN - visual representation of 25Hz Backfly signal
+    
+    // Handle asymmetric camera timing for Timer5
+    flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
+    TOGGLE(PORTE, CAM_SYNC_PIN);
+    flag_cam_high = !flag_cam_high;
+
+    if (flag_cam_high) {
+      TCNT5 = preload_hi;
+    }
+    else {
+      TCNT5 = preload_lo;
+    }
   }
 
   if (cam_pulse_count >= 100) {
@@ -457,27 +453,10 @@ ISR(INT5_vect) {
     // Toggle RTK LED every 1 second - FOR TESTING ONLY, REMOVE AFTER TESTING
     TOGGLE(PORTA, RTK_LED_PIN);
   }
-  
-  // NEW: Phase Accumulator for 60Hz FLIR generation from 50Hz IMU input
-  // Every 50Hz pulse, increment phase by (60/50) * 2^16 = 78643
-  phase_accumulator_60hz += PHASE_INCREMENT_60HZ;
-  
-  // Check for phase overflow (indicates 60Hz pulse should occur)
-  if (phase_accumulator_60hz >= 65536L) {
-    phase_accumulator_60hz -= 65536L;  // Remove one full cycle
-    
-    // Generate 60Hz pulse for FLIR BOZON
-    TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-    TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-    flir_60hz_from_imu = !flir_60hz_from_imu;
-    
-    // Optionally disable Timer4 when using IMU-derived 60Hz
-    // Comment out to keep Timer4 as backup
-    // TIMSK4 &= ~(1 << TOIE4);  // Disable Timer4 interrupt
-  }
 }
 
-// Timer4 ISR for FLIR BOZON 60Hz sync
+// Timer4 ISR DISABLED - using direct IMU 50Hz sync for FLIR BOZON
+/*
 ISR(TIMER4_OVF_vect) {
   flir_pulse_count++; // Increment FLIR pulse counter
 
@@ -498,6 +477,7 @@ ISR(TIMER4_OVF_vect) {
     flir_pulse_count = 0; // Reset FLIR counter
   }
 }
+*/
 
 void sendDummyTime() {
   if (ss < 59) {
