@@ -43,10 +43,10 @@
 #define RTK_FIX_PIN 4         //PORT E4 INT4
 #define IMU_50HZ_PIN 5        //PORT E5 INT5 - XSense IMU 50Hz input
 
-#define EXT_CNTRL1_PIN 0      //HUB Control input 1 PORT A0
-#define EXT_CNTRL2_PIN 1      //HUB Control input 2 PORT A1
-#define EXT_CNTRL3_PIN 2      //HUB Control input 3 PORT A2
-#define EXT_CNTRL4_PIN 3      //HUB Control input 4 PORT A3
+#define HUB_CNTRL_PIN_0 3      //HUB Control input 4 PORT A3  --> Backfly 25hz
+#define HUB_CNTRL_PIN_1 2      //HUB Control input 3 PORT A2  --> 
+#define HUB_CNTRL_PIN_2 1      //HUB Control input 2 PORT A1
+#define HUB_CNTRL_PIN_3 0      //HUB Control input 1 PORT A0
 
 // TEST PIN - REMOVE AFTER TESTING
 #define TEST_FLIR_PIN 5       //PORTF5 (Analog pin A5) - Mirror of FLIR_BOZON_SYNC_PIN for oscilloscope testing
@@ -161,10 +161,10 @@ void setup() {
   SET(DDRE, CAM_SYNC_PIN); //PORTE PE5
   SET(DDRA, POWER_LED_PIN); //PORTA PA3 - POWER LED
   SET(DDRA, ERR_LED_PIN); //PORTA PA6 - ERR LED for debugging
-  SET(DDRF, EXT_CNTRL1_PIN);
-  SET(DDRF, EXT_CNTRL2_PIN);
-  SET(DDRF, EXT_CNTRL3_PIN);
-  SET(DDRF, EXT_CNTRL4_PIN);
+  SET(DDRF, HUB_CNTRL_PIN_3);
+  SET(DDRF, HUB_CNTRL_PIN_2);
+  SET(DDRF, HUB_CNTRL_PIN_1);
+  SET(DDRF, HUB_CNTRL_PIN_0);
   SET(DDRF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Analog pin A5 for oscilloscope
   CLR(DDRE, GPS_PPS_PIN); //PORTE PE7
   CLR(DDRE, RTC_PPS_PIN); //PORTE PE6
@@ -174,8 +174,7 @@ void setup() {
   // Startup devices
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
   SET(PORTA, POWER_LED_PIN); // Turn on POWER LED solid using PORT register (PORTA3)
-  CLR(PORTF, EXT_CNTRL1_PIN); // Initialize GPS PPS LED OFF - will toggle when GPS PPS is received
-  SET(PORTF, EXT_CNTRL2_PIN); // Initialize EXT_CNTRL2_PIN HIGH - mirrors EXT_CNTRL4_PIN (Backfly 50Hz signal)
+  CLR(PORTF, HUB_CNTRL_PIN_3); // Initialize GPS PPS LED OFF - will toggle when GPS PPS is received
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV1_ENABLE, HIGH);
   digitalWrite(PPS_MUX, LOW);
@@ -218,7 +217,7 @@ void setup() {
   EIMSK |= B10100000;  // Enable INT7 (GPS PPS) and INT5 (IMU 50Hz)
 
   //SET(PORTE,CAM_SYNC_PIN);
-  SET(PORTF, EXT_CNTRL4_PIN); //HUB Power LED pin - now driving the Backlfy camera
+  SET(PORTF, HUB_CNTRL_PIN_0); //HUB Power LED pin 
 
   // Initialize FLIR BOZON sync pin high and start counting
   SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Start FLIR sync pin HIGH
@@ -321,16 +320,16 @@ void loop() {
 // This is only invoked when GPS PPS is there
 ISR(INT7_vect) {
   TOGGLE(PORTA, PPS_LED_PIN);
-  TOGGLE(PORTF, EXT_CNTRL1_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
 
   //Reset the timer5 to initial condition 
   SET(PORTA, JETSON_RST_PIN);
   CLR(PORTA, JETSON_REC_PIN);
   CLR(PORTA, JETSON_PWR_PIN);
-  SET(PORTF, EXT_CNTRL3_PIN);
+  // SET(PORTF, HUB_CNTRL_PIN_1);
   SET(PORTE, CAM_SYNC_PIN);
-  SET(PORTF, EXT_CNTRL2_PIN);
-  SET(PORTF, EXT_CNTRL4_PIN);
+  SET(PORTF, HUB_CNTRL_PIN_2);
+  SET(PORTF, HUB_CNTRL_PIN_0);
   SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH on PPS
   SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
   flag_pps_high = true;
@@ -371,14 +370,14 @@ ISR(INT7_vect) {
   //pps_width_count = 0;
   //flag_pps_high = true;
   //TCNT5 = 25536; // camera 50 cycle start 
-  //SET(PORTF,EXT_CNTRL2_PIN); // Lidar PPS pin
+  //SET(PORTF,HUB_CNTRL_PIN_2); // Lidar PPS pin
 
   //force camera to trigger
   //cam_pulse_count_pre = cam_pulse_count;
   //cam_pulse_count = 0;
   //flag_cam_high = true;
   //SET(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
-  //SET(PORTF,EXT_CNTRL3_PIN);
+  //SET(PORTF,HUB_CNTRL_PIN_1);
   //TCNT5 = preload_hi;
 
 
@@ -403,15 +402,15 @@ ISR(INT5_vect) {
 
   // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-  TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  // TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
 
   // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
   static bool camera_divider = false;
   camera_divider = !camera_divider;
   
   if (camera_divider) {
-    TOGGLE(PORTF, EXT_CNTRL4_PIN); // 25Hz Backfly camera signal
-    TOGGLE(PORTF, EXT_CNTRL2_PIN); // Mirror EXT_CNTRL4_PIN - visual representation of 25Hz Backfly signal
+    TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
+    TOGGLE(PORTF, HUB_CNTRL_PIN_2); // 
     
     // Handle asymmetric camera timing for Timer5
     flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
@@ -430,10 +429,10 @@ ISR(INT5_vect) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
-    SET(PORTF, EXT_CNTRL3_PIN);
+    // SET(PORTF, HUB_CNTRL_PIN_1);
     SET(PORTE, CAM_SYNC_PIN);
-    SET(PORTF, EXT_CNTRL2_PIN);
-    SET(PORTF, EXT_CNTRL4_PIN);
+    SET(PORTF, HUB_CNTRL_PIN_2);
+    SET(PORTF, HUB_CNTRL_PIN_0);
     flag_pps_high = true;
     cam_pulse_count = 0;
     pps_width_count = 0;
@@ -443,7 +442,7 @@ ISR(INT5_vect) {
     CLR(PORTA, JETSON_RST_PIN);
     SET(PORTA, JETSON_REC_PIN);
     SET(PORTA, JETSON_PWR_PIN);
-    CLR(PORTF, EXT_CNTRL3_PIN);
+    // CLR(PORTF, HUB_CNTRL_PIN_1);
     flag_pps_high = false;
     pps_width_count = 0;
   }
