@@ -24,9 +24,9 @@
 #define RTK_LED 27          //RTK LED
 #define ERR_LED 28
 #define POWER_LED_PIN 3     //PORT A3
-#define PPS_LED_PIN 4       //PORT A4
+#define PCB_PPS_LED_PIN 4       //PORT A4
 #define RTK_LED_PIN 5       //PORT A5
-#define ERR_LED_PIN 6       //PORT A6
+#define PCB_SYNC_LED_PIN 6       //PORT A6
 #define SIM_PPS_PIN 5       //PORT E5 ???????
 #define FLIR_BOZON_SYNC_PIN 6     //PORT J6
 #define CAM_SYNC_PIN 5      //PORT E5
@@ -45,8 +45,8 @@
 
 #define HUB_CNTRL_PIN_0 3      //HUB Control input 4 PORT A3  --> Backfly 25hz
 #define HUB_CNTRL_PIN_1 2      //HUB Control input 3 PORT A2  --> 
-#define HUB_CNTRL_PIN_2 1      //HUB Control input 2 PORT A1
-#define HUB_CNTRL_PIN_3 0      //HUB Control input 1 PORT A0
+#define HUB_CNTRL_PIN_2 0      //HUB Control input 2 PORT A1
+#define HUB_CNTRL_PIN_3 1      //HUB Control input 1 PORT A0
 
 // TEST PIN - REMOVE AFTER TESTING
 #define TEST_FLIR_PIN 5       //PORTF5 (Analog pin A5) - Mirror of FLIR_BOZON_SYNC_PIN for oscilloscope testing
@@ -65,6 +65,8 @@
 #define READ2(x,y) ((x>>y)&1)     // read out
 
 // variable for state machines---------------------------------------------------------
+int IMU_interrupt_cycle_count = 0;
+
 int cam_pulse_count = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_pre = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_for_GPRMC = 0;   // stores the pulse count of camera control timer -for GPRMC write (2x) 
@@ -160,7 +162,7 @@ void setup() {
   SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ6
   SET(DDRE, CAM_SYNC_PIN); //PORTE PE5
   SET(DDRA, POWER_LED_PIN); //PORTA PA3 - POWER LED
-  SET(DDRA, ERR_LED_PIN); //PORTA PA6 - ERR LED for debugging
+  SET(DDRA, PCB_SYNC_LED_PIN); //PORTA PA6 - ERR LED for debugging
   SET(DDRF, HUB_CNTRL_PIN_3);
   SET(DDRF, HUB_CNTRL_PIN_2);
   SET(DDRF, HUB_CNTRL_PIN_1);
@@ -317,10 +319,10 @@ void loop() {
 }
 
 // ISR -  PC inturupts - Masked Block 2
-// This is only invoked when GPS PPS is there
+// This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
-  TOGGLE(PORTA, PPS_LED_PIN);
-  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
+  TOGGLE(PORTA, PCB_PPS_LED_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_1);
 
   //Reset the timer5 to initial condition 
   SET(PORTA, JETSON_RST_PIN);
@@ -328,8 +330,7 @@ ISR(INT7_vect) {
   CLR(PORTA, JETSON_PWR_PIN);
   // SET(PORTF, HUB_CNTRL_PIN_1);
   SET(PORTE, CAM_SYNC_PIN);
-  SET(PORTF, HUB_CNTRL_PIN_2);
-  SET(PORTF, HUB_CNTRL_PIN_0);
+
   SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH on PPS
   SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
   flag_pps_high = true;
@@ -347,7 +348,7 @@ ISR(INT7_vect) {
   // TCNT4 = preload_flir_timer4; // Timer4 disabled
 
   //timer 5 rate adjustment
-  Serial.println(cam_pps_error);
+  // Serial.println(cam_pps_error);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
@@ -388,9 +389,12 @@ ISR(INT7_vect) {
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
 }
 
+
+//External innterupt from IMU - set to 50Hz (20ms)
 ISR(INT5_vect) {
   // DEBUG: Visual indicator of IMU 50Hz activity
-  TOGGLE(PORTA, ERR_LED_PIN);
+  TOGGLE(PORTA, PCB_SYNC_LED_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
   
   // Set flag to indicate IMU 50Hz is active (for fallback logic)
   imu_50hz_active = true;
@@ -400,9 +404,15 @@ ISR(INT5_vect) {
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
 
+  IMU_interrupt_cycle_count++;
+
+  if (IMU_interrupt_cycle_count >= 100) {
+    // runs every 1s
+    TOGGLE(PORTF, HUB_CNTRL_PIN_2);
+    // IMU_interrupt_cycle_count = 0;
+  }
   // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-  // TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
 
   // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
   static bool camera_divider = false;
@@ -410,7 +420,6 @@ ISR(INT5_vect) {
   
   if (camera_divider) {
     TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
-    TOGGLE(PORTF, HUB_CNTRL_PIN_2); // 
     
     // Handle asymmetric camera timing for Timer5
     flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
@@ -425,14 +434,15 @@ ISR(INT5_vect) {
     }
   }
 
+
   if (cam_pulse_count >= 100) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
-    // SET(PORTF, HUB_CNTRL_PIN_1);
     SET(PORTE, CAM_SYNC_PIN);
-    SET(PORTF, HUB_CNTRL_PIN_2);
     SET(PORTF, HUB_CNTRL_PIN_0);
+
+
     flag_pps_high = true;
     cam_pulse_count = 0;
     pps_width_count = 0;
@@ -462,7 +472,7 @@ ISR(TIMER4_OVF_vect) {
   // Handle 60Hz FLIR BOZON sync - simple toggle every interrupt = 120Hz/2 = 60Hz square wave
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
   TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
-  // TOGGLE(PORTA, ERR_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
+  // TOGGLE(PORTA, PCB_SYNC_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
   flag_flir_high = !flag_flir_high;
 
   // Reset timer with preload for 120Hz (60Hz toggle rate)
@@ -587,7 +597,7 @@ void parseData() {      // split the data into its parts
       memset(messageFromPC, 0, strlen(messageFromPC));
       Serial.write("No * in NMEA\n");
     }
-    //Serial.write(messageFromPC);
+
   }
   else {
     if (strcmp(strtokIndx, "$GNGGA") == 0) {
@@ -611,6 +621,10 @@ void parseData() {      // split the data into its parts
   strtokIndx = strtok(NULL, ",");
   floatFromPC = atof(strtokIndx);     // convert this part to a float
 */
+
+//Serial.write(messageFromPC);
+  Serial.print("Sent IMU count: ");
+  Serial.println(IMU_interrupt_cycle_count);
 }
 
 //============
