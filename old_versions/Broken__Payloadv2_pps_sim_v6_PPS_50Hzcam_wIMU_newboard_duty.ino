@@ -1,6 +1,23 @@
 //#include <LibPrintf.h>
 #include <Arduino.h>
 
+/*
+ * DUAL CAMERA SYNCHRONIZATION SYSTEM WITH IMU-DERIVED 50Hz
+ * =========================================================
+ * Timer4: DISABLED (using direct IMU 50Hz sync instead)
+ * Timer5: CAM_SYNC_PIN asymmetric timing (4ms HIGH / 16ms LOW for camera control)
+ * INT5: XSense IMU 50Hz input → Direct 50Hz FLIR sync + 25Hz camera sync
+ * Both systems synchronized to GPS PPS for absolute timing accuracy
+ * 
+ * FLIR BOZON: 50Hz sync directly from IMU interrupt (no jitter)
+ * Backfly Camera: 25Hz derived from IMU 50Hz using frequency divider
+ * Timer4 fallback system removed for simplicity and stability
+ * 
+ * Timer5: ORIGINAL asymmetric timing (preload_hi=4ms/preload_lo=16ms) - DO NOT CHANGE!
+ * 
+ * Timer Overflow Formula: TCNT = 65536 - (f_clk / (prescaler × f_overflow))
+ */
+
 //------- PIN definitions--PIN means the pin of the port------------------------------
 #define POWER_LED 25        //POWER LED
 #define PPS_LED 26          //PPS LED
@@ -8,10 +25,10 @@
 #define ERR_LED 28
 #define POWER_LED_PIN 3     //PORT A3
 #define PCB_PPS_LED_PIN 4       //PORT A4
-#define PCB_RTK_LED_PIN 5       //PORT A6
+#define RTK_LED_PIN 5       //PORT A5
 #define PCB_SYNC_LED_PIN 6       //PORT A6
-#define FLIR_SYNC_PIN 6     //PORT J6
-//#define CAM_SYNC_PIN 5      //PORT E5
+#define FLIR_BOZON_SYNC_PIN 6     //PORT J6
+#define CAM_SYNC_PIN 6      //PORT E6
 #define JETSON_REC 24       //Jetson Force Recovery //SYNCN
 #define JETSON_RST 23       //Jetson Reset //SYNCP
 #define JETSON_PWR 22       //Jetson PWR   
@@ -23,11 +40,15 @@
 #define GPS_PPS_PIN 7         //PORT E7 INT7
 #define RTC_PPS_PIN 6         //PORT E6 INT6
 #define RTK_FIX_PIN 4         //PORT E4 INT4
+#define IMU_50HZ_PIN 5        //PORT E5 INT5 - XSense IMU 50Hz input
 
 #define HUB_CNTRL_PIN_0 3      //HUB Control input 4 PORT A3  --> Backfly 25hz
 #define HUB_CNTRL_PIN_1 2      //HUB Control input 3 PORT A2  --> 
 #define HUB_CNTRL_PIN_2 0      //HUB Control input 2 PORT A1
 #define HUB_CNTRL_PIN_3 1      //HUB Control input 1 PORT A0
+
+// TEST PIN - REMOVE AFTER TESTING
+#define TEST_FLIR_PIN 5       //PORTF5 (Analog pin A5) - Mirror of FLIR_BOZON_SYNC_PIN for oscilloscope testing
 
 #define PPS_MUX 64            //PK2 LOW
 #define GNSS_MUX_EN 65        //PK3 LOW For Enable
@@ -51,14 +72,29 @@ int gps_pulse_count_last = 0;
 int pps_width_count = 0;  // used to control the pulse width of pps_sim
 bool flag_pps_high = false; // used to keep track of lidar pin state
 bool flag_cam_high = false; // used to keep track of camera pin state
+bool flag_flir_high = false; // used to keep track of FLIR BOZON sync pin state
 bool flag_write_serial = false; // used to control serial write to Jetson
-unsigned int preload_hi = 57536; //4ms
-unsigned int preload_lo = 33536; //16ms;
+unsigned int preload_hi = 57559; //4ms: 57536 + 23 ticks compensation for interrupt overhead
+unsigned int preload_lo = 33559; //16ms: 33536 + 23 ticks compensation for interrupt overhead
+unsigned int preload_flir_hi = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle high phase  
+unsigned int preload_flir_lo = 49286; //8.33ms: 49286 for 60Hz 50% duty cycle low phase
 unsigned int max_val = 65535;
 int cam_pps_error = 0;
 int cam_pps_correction = 0;
+int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 
-unsigned int IMU_pulse_count = 0;
+int IMU_interrupt_cycle_count = 10; // Counts IMU 50Hz interrupts for 1s intervals
+
+// Timer4 variables for FLIR 50Hz sync (DISABLED - using IMU 50Hz directly)
+// unsigned int preload_flir_timer4 = 48877; // Timer4 disabled
+// int flir_pps_error = 0;
+// int flir_pps_correction = 0;
+
+// Phase Accumulator variables (REMOVED - using direct 50Hz sync)
+// long phase_accumulator_60hz = 0;
+// const long PHASE_INCREMENT_60HZ = 78643;
+// bool flir_60hz_from_imu = false;
+bool imu_50hz_active = false;             // Flag to indicate IMU 50Hz is being used
 
 
 //variables for pps syncing
@@ -121,19 +157,23 @@ void setup() {
   pinMode(GNSS_MUX_SEL, OUTPUT);
 
   // Set using DDR regiter for non mapped pins
-  //SET(DDRE,SIM_PPS_PIN);   //PORTJ PJ5
-  SET(DDRJ, FLIR_SYNC_PIN); //PORTJ PJ4
-  //SET(DDRE,CAM_SYNC_PIN); //PORTJ PJ3
-  SET(DDRF, HUB_CNTRL_PIN_0);
-  SET(DDRF, HUB_CNTRL_PIN_1);
-  SET(DDRF, HUB_CNTRL_PIN_2);
+  SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ6
+  SET(DDRE, CAM_SYNC_PIN); //PORTE PE6
+  SET(DDRA, POWER_LED_PIN); //PORTA PA3 - POWER LED
+  SET(DDRA, PCB_SYNC_LED_PIN); //PORTA PA6 - ERR LED for debugging
   SET(DDRF, HUB_CNTRL_PIN_3);
-  CLR(DDRE, GPS_PPS_PIN); //PORTJ PK0
-  CLR(DDRE, RTC_PPS_PIN); //PORTJ PK1
+  SET(DDRF, HUB_CNTRL_PIN_2);
+  SET(DDRF, HUB_CNTRL_PIN_1);
+  SET(DDRF, HUB_CNTRL_PIN_0);
+  SET(DDRF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Analog pin A5 for oscilloscope
+  CLR(DDRE, GPS_PPS_PIN); //PORTE PE7
+  CLR(DDRE, RTC_PPS_PIN); //PORTE PE6
+  CLR(DDRE, IMU_50HZ_PIN); //PORTE PE5 - IMU 50Hz input
   //DDRJ |= B00101000;  // Set using DDR regiter for non mapped pins
 
   // Startup devices
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
+  SET(PORTA, POWER_LED_PIN); // Turn on POWER LED solid using PORT register (PORTA3)
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV1_ENABLE, HIGH);
   digitalWrite(PPS_MUX, LOW);
@@ -147,29 +187,71 @@ void setup() {
   Serial.begin(115200); // Terminal
   Serial2.begin(38400); // GPS Reciever
 
-  Serial.println("\nSystem Booting...");
+  Serial.println("Starting....");
 
-  // 2) define levels for INT7 (PE7) and INT5 (PE5)
-  DDRE &= ~((1 << PE7) | (1 << PE5));   // inputs
-  PORTE |= ((1 << PE7) | (1 << PE5));   // pull-ups ON (remove later if your sources drive the lines)
-  // Clear any pending flags *before* enabling
-  EIFR |= (1 << INTF7) | (1 << INTF5);
-  // Rising edge on INT7 and INT5; enable both
-  EICRB |= (1 << ISC71) | (1 << ISC70) | (1 << ISC51) | (1 << ISC50);
-  EIMSK |= (1 << INT7) | (1 << INT5);
+  noInterrupts();           // disable all interrupts
 
-  interrupts();
+  // Timer4 DISABLED - using direct IMU 50Hz sync for FLIR BOZON
+  // TCCR4A = 0;               // disable compare capture A
+  // TCCR4B = 0;               // disable compare capture B
+  // TCNT4 = preload_flir_timer4; // Timer4 disabled
+  // TCCR4B |= (1 << CS41);    // Timer4 disabled
+  // TIMSK4 |= (1 << TOIE4);   // Timer4 disabled
 
-  Serial.println("Interrupts for GPS and Camera PPS enabled");
+  // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
+  // Timer5: Uses asymmetric timing (preload_hi/preload_lo) for camera control
+  TCCR5A = 0;               // disable compare capture A
+  TCCR5B = 0;               // disable compare capture B
+  TCNT5 = 25536; // asymmetric camera timing (4ms/16ms)
+  TCCR5B |= (1 << CS51);    // PS 8 prescaler :Timer resolution 1/16e6*PS
+  TIMSK5 |= (1 << TOIE5);   // enable timer overflow interrupt
+  interrupts();             // enable all interrupts
+
+
+  //Masked External interrupt (GPS)  PCINT 16
+  //PCICR |= B00000100; // Pin change interrupt 1 enabled (PCINT15:8)
+  //PCMSK2 |= B00000001; // Specify which pin is enabled (PCINT16 and 17)
+
+  //Enable external interrupts INT7 (GPS PPS) and INT5 (IMU 50Hz)
+  EICRB |= B11001100;  // INT7: rising edge, INT6: rising edge, INT5: rising edge  
+  EIMSK |= B10100000;  // Enable INT7 (GPS PPS) and INT5 (IMU 50Hz)
 
   //SET(PORTE,CAM_SYNC_PIN);
-  SET(PORTF, HUB_CNTRL_PIN_0); //HUB Power LED pin - now driving the Backlfy camera
+  SET(PORTF, HUB_CNTRL_PIN_0); //HUB Power LED pin 
 
-  Serial.println("System Ready\n\n");
+  // Initialize FLIR BOZON sync pin high and start counting
+  SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Start FLIR sync pin HIGH
+  SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Mirror for oscilloscope
+  flag_flir_high = true;
+  flir_pulse_count = 0;
 }
 
 // Loop functions
 void loop() {
+  // Timer4 fallback logic DISABLED - using direct IMU 50Hz sync only
+  /*
+  static unsigned long last_imu_check = 0;
+  static unsigned long imu_timeout_counter = 0;
+  
+  if (millis() - last_imu_check > 100) {  // Check every 100ms
+    last_imu_check = millis();
+    
+    if (imu_50hz_active) {
+      imu_timeout_counter = 0;  // Reset timeout counter
+      imu_50hz_active = false;  // Reset flag for next check
+      // IMU is working, optionally disable Timer4
+      // TIMSK4 &= ~(1 << TOIE4);  // Uncomment to disable Timer4 when IMU active
+    } else {
+      imu_timeout_counter++;
+      if (imu_timeout_counter > 10) {  // No IMU for 1 second
+        // Re-enable Timer4 as fallback
+        TIMSK4 |= (1 << TOIE4);  // Enable Timer4 interrupt as backup
+        // Serial.println("IMU 50Hz timeout - using Timer4 fallback");
+      }
+    }
+  }
+  */
+
   //digitalWrite(JETSON_PWR,HIGH);
   //digitalWrite(JETSON_REC,HIGH);
   //digitalWrite(JETSON_RST,HIGH);
@@ -231,6 +313,7 @@ void loop() {
 
 
 
+
 }
 
 // ISR -  PC inturupts - Masked Block 2
@@ -243,20 +326,27 @@ ISR(INT7_vect) {
   SET(PORTA, JETSON_RST_PIN);
   CLR(PORTA, JETSON_REC_PIN);
   CLR(PORTA, JETSON_PWR_PIN);
+  // SET(PORTF, HUB_CNTRL_PIN_1);
+  SET(PORTE, CAM_SYNC_PIN);
 
+  SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH on PPS
+  SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
   flag_pps_high = true;
+  flag_flir_high = true; // Reset FLIR sync state
   cam_pulse_count = 0;
+  flir_pulse_count = 0; // Reset FLIR pulse counter
   pps_width_count = 0;
   if (cam_pulse_count_for_GPRMC < 100) {
     sendDummyTime();
   }
   cam_pulse_count_for_GPRMC = 0;
   cam_pps_error = max_val - TCNT5;
-  TCNT5 = preload_hi;
+  // flir_pps_error = max_val - TCNT4; // Timer4 disabled - using direct IMU 50Hz sync
+  TCNT5 = preload_hi; // Use existing preload_hi for Timer5 asymmetric timing
+  // TCNT4 = preload_flir_timer4; // Timer4 disabled
 
   //timer 5 rate adjustment
   Serial.println(cam_pps_error);
-  Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
@@ -268,6 +358,10 @@ ISR(INT7_vect) {
     cam_pps_correction = 0;
   }
 
+  // Timer4 FLIR rate adjustment DISABLED - using direct IMU 50Hz sync
+  // Serial.print("FLIR PPS Error: ");
+  // Serial.println(flir_pps_error);
+
 
   //pulse Lidar
   //SET(PORTA,JETSON_RST_PIN);
@@ -275,14 +369,13 @@ ISR(INT7_vect) {
   //pps_width_count = 0;
   //flag_pps_high = true;
   //TCNT5 = 25536; // camera 50 cycle start 
-  //SET(PORTF,EXT_CNTRL2_PIN); // Lidar PPS pin
 
   //force camera to trigger
   //cam_pulse_count_pre = cam_pulse_count;
   //cam_pulse_count = 0;
   //flag_cam_high = true;
   //SET(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
-  //SET(PORTF,EXT_CNTRL3_PIN);
+  //SET(PORTF,HUB_CNTRL_PIN_1);
   //TCNT5 = preload_hi;
 
 
@@ -291,52 +384,99 @@ ISR(INT7_vect) {
 
   //over flow interupt checks Turn off lidar pulse at 380ms
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
+
 }
 
-ISR(INT5_vect) {
-  pps_width_count++;
-  cam_pulse_count++;
-  cam_pulse_count_for_GPRMC++;
-  IMU_pulse_count++;
-  //TCNT5 = 25536;
 
-  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
+//External innterupt from IMU - set to 50Hz (20ms)
+ISR(INT5_vect) {
+  IMU_interrupt_cycle_count++;
+  // DEBUG: Visual indicator of IMU 50Hz activity
   TOGGLE(PORTA, PCB_SYNC_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
 
-  if (IMU_pulse_count >= 50) {
-    // every 1s
-    TOGGLE(PORTF, HUB_CNTRL_PIN_2);
-    IMU_pulse_count = 0;
-  }
 
+  // Set flag to indicate IMU 50Hz is active (for fallback logic)
+  imu_50hz_active = true;
+  
+  // Original camera sync functionality
+  pps_width_count++;
+  cam_pulse_count++;
+  cam_pulse_count_for_GPRMC++;
+
+  // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
+  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+
+  // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
+  static bool camera_divider = false;
+  camera_divider = !camera_divider;
+  
+  if (camera_divider) {
+    TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
+    
+    // Handle asymmetric camera timing for Timer5
+    flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
+    TOGGLE(PORTE, CAM_SYNC_PIN);
+    flag_cam_high = !flag_cam_high;
+
+    if (flag_cam_high) {
+      TCNT5 = preload_hi;
+    }
+    else {
+      TCNT5 = preload_lo;
+    }
+  }
 
   if (cam_pulse_count >= 100) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
-
-
+    SET(PORTE, CAM_SYNC_PIN);
+    SET(PORTF, HUB_CNTRL_PIN_0);
     flag_pps_high = true;
     cam_pulse_count = 0;
     pps_width_count = 0;
   }
 
-
   if (flag_pps_high && pps_width_count >= 38) {
     CLR(PORTA, JETSON_RST_PIN);
     SET(PORTA, JETSON_REC_PIN);
     SET(PORTA, JETSON_PWR_PIN);
-
+    // CLR(PORTF, HUB_CNTRL_PIN_1);
     flag_pps_high = false;
     pps_width_count = 0;
   }
 
   if (cam_pulse_count_for_GPRMC >= 100) { //writes serial every second
     sendDummyTime();
+    // Toggle RTK LED every 1 second - FOR TESTING ONLY, REMOVE AFTER TESTING
+    TOGGLE(PORTA, PCB_RTK_LED_PIN);
   }
-
 }
+
+// Timer4 ISR DISABLED - using direct IMU 50Hz sync for FLIR BOZON
+/*
+ISR(TIMER4_OVF_vect) {
+  flir_pulse_count++; // Increment FLIR pulse counter
+
+  // Handle 60Hz FLIR BOZON sync - simple toggle every interrupt = 120Hz/2 = 60Hz square wave
+  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
+  TOGGLE(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+  // TOGGLE(PORTA, PCB_SYNC_LED_PIN);   // DEBUG: Visual indicator of Timer4 activity
+  flag_flir_high = !flag_flir_high;
+
+  // Reset timer with preload for 120Hz (60Hz toggle rate)
+  TCNT4 = preload_flir_timer4;
+
+  // Reset FLIR counter every 120 interrupts (1 second at 120Hz)
+  if (flir_pulse_count >= 120) {
+    SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH
+    SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
+    flag_flir_high = true; // Reset FLIR sync state
+    flir_pulse_count = 0; // Reset FLIR counter
+  }
+}
+*/
 
 void sendDummyTime() {
   if (ss < 59) {
@@ -447,7 +587,7 @@ void parseData() {      // split the data into its parts
       memset(messageFromPC, 0, strlen(messageFromPC));
       Serial.write("No * in NMEA\n");
     }
-    //Serial.write(messageFromPC);
+    Serial.write(messageFromPC);
   }
   else {
     if (strcmp(strtokIndx, "$GNGGA") == 0) {
@@ -464,6 +604,7 @@ void parseData() {      // split the data into its parts
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
     }
+
   }
   /*strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
   integerFromPC = atoi(strtokIndx);     // convert this part to an integer
