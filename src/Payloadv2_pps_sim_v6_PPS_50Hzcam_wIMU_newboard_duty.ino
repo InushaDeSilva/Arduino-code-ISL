@@ -86,6 +86,7 @@ int hh = 0;
 
 // variables to hold the parsed NMEA data
 bool flag_send_next_nema = false;
+byte gps_quality = 0; // GPS quality: 0=invalid, 1=GPS, 2=DGPS, 4=RTK fixed, 5=RTK float
 const int numChars = 256; // increase as needed
 char receivedChars[numChars];
 char tempChars[numChars];
@@ -476,6 +477,17 @@ void parseData() {      // split the data into its parts
   }
   else {
     if (strcmp(strtokIndx, "$GNGGA") == 0) {
+      // Extract GPS quality efficiently - skip to quality field (6th field)
+      char* temp_ptr = tempChars;
+      byte comma_count = 0;
+      while (*temp_ptr && comma_count < 6) {
+        if (*temp_ptr == ',') comma_count++;
+        temp_ptr++;
+      }
+      if (comma_count == 6 && *temp_ptr >= '0' && *temp_ptr <= '9') {
+        gps_quality = *temp_ptr - '0'; // Convert char to number
+      }
+      
       strcpy(messageFromPC, strtokIndx);
       strcat(messageFromPC, ",");
       strtokIndx = strtok(NULL, "\n"); //takes the rest of the message
