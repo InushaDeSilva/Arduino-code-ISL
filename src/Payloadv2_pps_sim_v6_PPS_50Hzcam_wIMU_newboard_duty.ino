@@ -10,7 +10,7 @@
 #define PCB_PPS_LED_PIN 4       //PORT A4
 #define PCB_RTK_LED_PIN 5       //PORT A6
 #define PCB_SYNC_LED_PIN 6       //PORT A6
-#define FLIR_SYNC_PIN 6     //PORT J6
+#define FLIR_BOZON_SYNC_PIN 6     //PORT J6
 //#define CAM_SYNC_PIN 5      //PORT E5
 #define JETSON_REC 24       //Jetson Force Recovery //SYNCN
 #define JETSON_RST 23       //Jetson Reset //SYNCP
@@ -122,7 +122,8 @@ void setup() {
 
   // Set using DDR regiter for non mapped pins
   //SET(DDRE,SIM_PPS_PIN);   //PORTJ PJ5
-  SET(DDRJ, FLIR_SYNC_PIN); //PORTJ PJ4
+  // SET(DDRJ, FLIR_SYNC_PIN); //PORTJ PJ4
+  SET(DDRJ, FLIR_BOZON_SYNC_PIN); //PORTJ PJ4
   //SET(DDRE,CAM_SYNC_PIN); //PORTJ PJ3
   SET(DDRF, HUB_CNTRL_PIN_0);
   SET(DDRF, HUB_CNTRL_PIN_1);
@@ -254,7 +255,7 @@ ISR(INT7_vect) {
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
-  // old timer 5 rate adjustment
+  // //old timer 5 rate adjustment
   // Serial.println(cam_pps_error);
   // Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
@@ -293,6 +294,8 @@ ISR(INT7_vect) {
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
 }
 
+
+// External Interrupt from IMU at 50HZ (20ms)
 ISR(INT5_vect) {
   pps_width_count++;
   cam_pulse_count++;
@@ -311,7 +314,7 @@ ISR(INT5_vect) {
   }
 
 
-  if (cam_pulse_count >= 100) {
+  if (cam_pulse_count >= 50) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
@@ -322,8 +325,30 @@ ISR(INT5_vect) {
     pps_width_count = 0;
   }
 
+  // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
+  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
 
-  if (flag_pps_high && pps_width_count >= 38) {
+  // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
+  static bool camera_divider = false;
+  camera_divider = !camera_divider;
+
+  if (camera_divider) {
+    TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
+
+    // Handle asymmetric camera timing for Timer5
+    // TOGGLE(PORTE, CAM_SYNC_PIN);
+    flag_cam_high = !flag_cam_high;
+
+    if (flag_cam_high) {
+      TCNT5 = preload_hi;
+    }
+    else {
+      TCNT5 = preload_lo;
+    }
+  }
+
+
+  if (flag_pps_high && pps_width_count >= 19) {
     CLR(PORTA, JETSON_RST_PIN);
     SET(PORTA, JETSON_REC_PIN);
     SET(PORTA, JETSON_PWR_PIN);
@@ -332,7 +357,7 @@ ISR(INT5_vect) {
     pps_width_count = 0;
   }
 
-  if (cam_pulse_count_for_GPRMC >= 100) { //writes serial every second
+  if (cam_pulse_count_for_GPRMC >= 50) { //writes serial every second
     sendDummyTime();
   }
 
