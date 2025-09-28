@@ -254,9 +254,9 @@ ISR(INT7_vect) {
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
-  //timer 5 rate adjustment
-  Serial.println(cam_pps_error);
-  Serial.println(IMU_pulse_count);
+  // old timer 5 rate adjustment
+  // Serial.println(cam_pps_error);
+  // Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
