@@ -189,6 +189,8 @@ void setup() {
   Serial.begin(115200); // Terminal
   Serial2.begin(38400); // GPS Reciever
 
+  Serial.println("Starting....");
+
   noInterrupts();           // disable all interrupts
 
   // Timer4 DISABLED - using direct IMU 50Hz sync for FLIR BOZON
@@ -604,7 +606,6 @@ void parseData() {      // split the data into its parts
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
     }
-
 
   }
   /*strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
