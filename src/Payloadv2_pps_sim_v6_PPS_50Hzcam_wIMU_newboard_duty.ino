@@ -65,8 +65,6 @@
 #define READ2(x,y) ((x>>y)&1)     // read out
 
 // variable for state machines---------------------------------------------------------
-int IMU_interrupt_cycle_count = 0;
-
 int cam_pulse_count = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_pre = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_for_GPRMC = 0;   // stores the pulse count of camera control timer -for GPRMC write (2x) 
@@ -85,6 +83,8 @@ unsigned int max_val = 65535;
 int cam_pps_error = 0;
 int cam_pps_correction = 0;
 int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
+
+int IMU_interrupt_cycle_count = 10; // Counts IMU 50Hz interrupts for 1s intervals
 
 // Timer4 variables for FLIR 50Hz sync (DISABLED - using IMU 50Hz directly)
 // unsigned int preload_flir_timer4 = 48877; // Timer4 disabled
@@ -176,7 +176,6 @@ void setup() {
   // Startup devices
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
   SET(PORTA, POWER_LED_PIN); // Turn on POWER LED solid using PORT register (PORTA3)
-  CLR(PORTF, HUB_CNTRL_PIN_3); // Initialize GPS PPS LED OFF - will toggle when GPS PPS is received
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV1_ENABLE, HIGH);
   digitalWrite(PPS_MUX, LOW);
@@ -190,7 +189,6 @@ void setup() {
   Serial.begin(115200); // Terminal
   Serial2.begin(38400); // GPS Reciever
 
-  // Configure Timer5 for 100Hz - toggle achieves the cam trigger of 50 Hz
   noInterrupts();           // disable all interrupts
 
   // Timer4 DISABLED - using direct IMU 50Hz sync for FLIR BOZON
@@ -348,7 +346,7 @@ ISR(INT7_vect) {
   // TCNT4 = preload_flir_timer4; // Timer4 disabled
 
   //timer 5 rate adjustment
-  // Serial.println(cam_pps_error);
+  Serial.println(cam_pps_error);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
@@ -371,7 +369,6 @@ ISR(INT7_vect) {
   //pps_width_count = 0;
   //flag_pps_high = true;
   //TCNT5 = 25536; // camera 50 cycle start 
-  //SET(PORTF,HUB_CNTRL_PIN_2); // Lidar PPS pin
 
   //force camera to trigger
   //cam_pulse_count_pre = cam_pulse_count;
@@ -387,15 +384,18 @@ ISR(INT7_vect) {
 
   //over flow interupt checks Turn off lidar pulse at 380ms
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
+
 }
 
 
 //External innterupt from IMU - set to 50Hz (20ms)
 ISR(INT5_vect) {
+  IMU_interrupt_cycle_count++;
   // DEBUG: Visual indicator of IMU 50Hz activity
   TOGGLE(PORTA, PCB_SYNC_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
-  
+
+
   // Set flag to indicate IMU 50Hz is active (for fallback logic)
   imu_50hz_active = true;
   
@@ -404,13 +404,6 @@ ISR(INT5_vect) {
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
 
-  IMU_interrupt_cycle_count++;
-
-  if (IMU_interrupt_cycle_count >= 100) {
-    // runs every 1s
-    TOGGLE(PORTF, HUB_CNTRL_PIN_2);
-    // IMU_interrupt_cycle_count = 0;
-  }
   // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
   TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
 
@@ -434,15 +427,12 @@ ISR(INT5_vect) {
     }
   }
 
-
   if (cam_pulse_count >= 100) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
     SET(PORTE, CAM_SYNC_PIN);
     SET(PORTF, HUB_CNTRL_PIN_0);
-
-
     flag_pps_high = true;
     cam_pulse_count = 0;
     pps_width_count = 0;
@@ -597,7 +587,7 @@ void parseData() {      // split the data into its parts
       memset(messageFromPC, 0, strlen(messageFromPC));
       Serial.write("No * in NMEA\n");
     }
-
+    Serial.write(messageFromPC);
   }
   else {
     if (strcmp(strtokIndx, "$GNGGA") == 0) {
@@ -614,6 +604,8 @@ void parseData() {      // split the data into its parts
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
     }
+
+
   }
   /*strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
   integerFromPC = atoi(strtokIndx);     // convert this part to an integer
@@ -621,10 +613,6 @@ void parseData() {      // split the data into its parts
   strtokIndx = strtok(NULL, ",");
   floatFromPC = atof(strtokIndx);     // convert this part to a float
 */
-
-//Serial.write(messageFromPC);
-  Serial.print("Sent IMU count: ");
-  Serial.println(IMU_interrupt_cycle_count);
 }
 
 //============
