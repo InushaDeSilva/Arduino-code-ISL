@@ -95,6 +95,21 @@ int flir_pulse_count = 0;   // stores the pulse count for FLIR BOZON sync timing
 // bool flir_60hz_from_imu = false;
 bool imu_50hz_active = false;             // Flag to indicate IMU 50Hz is being used
 
+// Variables for independent 1Hz pulse signals
+int imu_1hz_counter = 0;                  // Counter for IMU-based 1Hz pulse (50 counts = 1 second)
+int imu_1hz_pulse_width = 0;              // Pulse width counter for IMU-based 1Hz pulse
+bool imu_1hz_pulse_active = false;        // Flag to track if IMU 1Hz pulse is HIGH
+int gps_1hz_pulse_width = 0;              // Pulse width counter for GPS-based 1Hz pulse
+bool gps_1hz_pulse_active = false;        // Flag to track if GPS 1Hz pulse is HIGH
+const int PULSE_WIDTH_CYCLES = 5;         // 5 cycles = 100ms pulse width (at 50Hz = 20ms per cycle)
+
+// Debug variables (non-blocking, safe for ISRs)
+volatile unsigned long imu_interrupt_count = 0;    // Count total IMU interrupts
+volatile unsigned long gps_interrupt_count = 0;    // Count total GPS interrupts
+volatile unsigned long imu_pulse_count_debug = 0;  // Count IMU 1Hz pulses generated
+volatile unsigned long gps_pulse_count_debug = 0;  // Count GPS 1Hz pulses generated
+volatile bool imu_interrupt_active = false;        // Flag to show IMU interrupts are happening
+
 
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
@@ -175,6 +190,8 @@ void setup() {
   digitalWrite(POWER_LED, HIGH);  // Turns on level converter
   SET(PORTA, POWER_LED_PIN); // Turn on POWER LED solid using PORT register (PORTA3)
   CLR(PORTF, HUB_CNTRL_PIN_3); // Initialize GPS PPS LED OFF - will toggle when GPS PPS is received
+  CLR(PORTF, HUB_CNTRL_PIN_1); // Initialize GPS-based 1Hz pulse pin LOW
+  CLR(PORTF, HUB_CNTRL_PIN_2); // Initialize IMU-based 1Hz pulse pin LOW
   digitalWrite(LEVEL_CNV_ENABLE, HIGH);  // Turns on level converter
   digitalWrite(LEVEL_CNV1_ENABLE, HIGH);
   digitalWrite(PPS_MUX, LOW);
@@ -224,10 +241,52 @@ void setup() {
   SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING - Mirror for oscilloscope
   flag_flir_high = true;
   flir_pulse_count = 0;
+  
+  // Initialize IMU-based 1Hz pulse system
+  imu_1hz_counter = 0;
+  imu_1hz_pulse_active = false;
+  imu_1hz_pulse_width = 0;
 }
 
 // Loop functions
 void loop() {
+  // Debug output every few seconds (non-blocking, safe)
+  static unsigned long last_debug = 0;
+  static unsigned long last_imu_count = 0;
+  static unsigned long last_gps_count = 0;
+  
+  if (millis() - last_debug > 3000) {  // Every 3 seconds
+    last_debug = millis();
+    
+    // Check if IMU interrupts are happening
+    if (imu_interrupt_count > last_imu_count) {
+      Serial.print("IMU INT: ");
+      Serial.print(imu_interrupt_count - last_imu_count);
+      Serial.print("/3s, 1Hz pulses: ");
+      Serial.println(imu_pulse_count_debug);
+      last_imu_count = imu_interrupt_count;
+    } else {
+      Serial.println("*** NO IMU INTERRUPTS! ***");
+    }
+    
+    // Check GPS interrupts
+    if (gps_interrupt_count > last_gps_count) {
+      Serial.print("GPS INT: ");
+      Serial.print(gps_interrupt_count - last_gps_count);
+      Serial.print("/3s, 1Hz pulses: ");
+      Serial.println(gps_pulse_count_debug);
+      last_gps_count = gps_interrupt_count;
+    } else {
+      Serial.println("No GPS interrupts (expected if no GPS)");
+    }
+    
+    // Show current pin states
+    Serial.print("PIN2 state: ");
+    Serial.print(READ2(PORTF, HUB_CNTRL_PIN_2));
+    Serial.print(", PIN1 state: ");
+    Serial.println(READ2(PORTF, HUB_CNTRL_PIN_1));
+    Serial.println("---");
+  }
   // Timer4 fallback logic DISABLED - using direct IMU 50Hz sync only
   /*
   static unsigned long last_imu_check = 0;
@@ -319,16 +378,26 @@ void loop() {
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there
 ISR(INT7_vect) {
+  gps_interrupt_count++;  // Debug: Count GPS interrupts
+  
   TOGGLE(PORTA, PPS_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
+
+  // GPS-based 1Hz pulse: Start HIGH pulse on HUB_CNTRL_PIN_1
+  SET(PORTF, HUB_CNTRL_PIN_1);
+  gps_1hz_pulse_active = true;
+  gps_1hz_pulse_width = 0;
+  gps_pulse_count_debug++;  // Debug: Count GPS 1Hz pulses
+  
+  // Synchronize IMU-based 1Hz pulse to GPS PPS
+  imu_1hz_counter = 0;  // Reset IMU counter to sync with GPS
+  // Note: Don't interfere with ongoing IMU pulse if it's active
 
   //Reset the timer5 to initial condition 
   SET(PORTA, JETSON_RST_PIN);
   CLR(PORTA, JETSON_REC_PIN);
   CLR(PORTA, JETSON_PWR_PIN);
-  // SET(PORTF, HUB_CNTRL_PIN_1);
   SET(PORTE, CAM_SYNC_PIN);
-  SET(PORTF, HUB_CNTRL_PIN_2);
   SET(PORTF, HUB_CNTRL_PIN_0);
   SET(PORTJ, FLIR_BOZON_SYNC_PIN); // Reset FLIR sync pin HIGH on PPS
   SET(PORTF, TEST_FLIR_PIN); // TEST PIN - REMOVE AFTER TESTING
@@ -347,6 +416,7 @@ ISR(INT7_vect) {
   // TCNT4 = preload_flir_timer4; // Timer4 disabled
 
   //timer 5 rate adjustment
+  Serial.print("PPS Error: ");
   Serial.println(cam_pps_error);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
@@ -388,12 +458,45 @@ ISR(INT7_vect) {
   //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
 }
 
+//external innterupt from IMU
 ISR(INT5_vect) {
+  imu_interrupt_count++;    // Debug: Count total IMU interrupts
+  imu_interrupt_active = true;  // Debug: Flag that IMU is working
+  
   // DEBUG: Visual indicator of IMU 50Hz activity
   TOGGLE(PORTA, ERR_LED_PIN);
   
   // Set flag to indicate IMU 50Hz is active (for fallback logic)
   imu_50hz_active = true;
+  
+  // IMU-based 1Hz pulse generation for HUB_CNTRL_PIN_2
+  imu_1hz_counter++;
+  if (imu_1hz_counter >= 50) {  // 50 interrupts = 1 second at 50Hz
+    // Start 1Hz pulse
+    SET(PORTF, HUB_CNTRL_PIN_2);
+    imu_1hz_pulse_active = true;
+    imu_1hz_pulse_width = 0;
+    imu_1hz_counter = 0;  // Reset counter
+    imu_pulse_count_debug++;  // Debug: Count IMU 1Hz pulses
+  }
+  
+  // Handle IMU-based 1Hz pulse width control
+  if (imu_1hz_pulse_active) {
+    imu_1hz_pulse_width++;
+    if (imu_1hz_pulse_width >= PULSE_WIDTH_CYCLES) {
+      CLR(PORTF, HUB_CNTRL_PIN_2);  // End pulse
+      imu_1hz_pulse_active = false;
+    }
+  }
+  
+  // Handle GPS-based 1Hz pulse width control
+  if (gps_1hz_pulse_active) {
+    gps_1hz_pulse_width++;
+    if (gps_1hz_pulse_width >= PULSE_WIDTH_CYCLES) {
+      CLR(PORTF, HUB_CNTRL_PIN_1);  // End pulse
+      gps_1hz_pulse_active = false;
+    }
+  }
   
   // Original camera sync functionality
   pps_width_count++;
@@ -410,7 +513,6 @@ ISR(INT5_vect) {
   
   if (camera_divider) {
     TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
-    TOGGLE(PORTF, HUB_CNTRL_PIN_2); // 
     
     // Handle asymmetric camera timing for Timer5
     flag_cam_high = READ2(PORTE, CAM_SYNC_PIN);
@@ -429,9 +531,7 @@ ISR(INT5_vect) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
-    // SET(PORTF, HUB_CNTRL_PIN_1);
     SET(PORTE, CAM_SYNC_PIN);
-    SET(PORTF, HUB_CNTRL_PIN_2);
     SET(PORTF, HUB_CNTRL_PIN_0);
     flag_pps_high = true;
     cam_pulse_count = 0;
