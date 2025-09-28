@@ -239,7 +239,7 @@ void loop() {
 // This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
   TOGGLE(PORTA, PCB_PPS_LED_PIN);
-  TOGGLE(PORTF, HUB_CNTRL_PIN_1);
+  SET(PORTF, HUB_CNTRL_PIN_1);
 
   //Reset the timer5 to initial condition 
   SET(PORTA, JETSON_RST_PIN);
@@ -258,7 +258,8 @@ ISR(INT7_vect) {
 
   // //old timer 5 rate adjustment
   // Serial.println(cam_pps_error);
-  // Serial.println(IMU_pulse_count);
+  Serial.print("IMU -GPS Pulse GAP: ");
+  Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
@@ -268,6 +269,11 @@ ISR(INT7_vect) {
   }
   else {
     cam_pps_correction = 0;
+  }
+
+  if (IMU_pulse_count >= 5) { // at least GPS lock and 200ms
+    IMU_pulse_count = 0;
+    SET(PORTF, HUB_CNTRL_PIN_2);
   }
 
 
@@ -286,6 +292,9 @@ ISR(INT7_vect) {
   //SET(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
   //SET(PORTF,EXT_CNTRL3_PIN);
   //TCNT5 = preload_hi;
+
+  delayMicroseconds(40000);
+  CLR(PORTF, HUB_CNTRL_PIN_1);
 
 
 
@@ -308,14 +317,16 @@ ISR(INT5_vect) {
   TOGGLE(PORTA, PCB_SYNC_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
 
-  if (IMU_pulse_count >= 50) {
-    // every 1s
+
+
+  if (IMU_pulse_count > 25) {
+    // every 500ms
     TOGGLE(PORTF, HUB_CNTRL_PIN_2);
     IMU_pulse_count = 0;
   }
 
 
-  if (cam_pulse_count >= 50) {
+  if (cam_pulse_count > 50) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
@@ -487,7 +498,7 @@ void parseData() {      // split the data into its parts
       if (comma_count == 6 && *temp_ptr >= '0' && *temp_ptr <= '9') {
         gps_quality = *temp_ptr - '0'; // Convert char to number
       }
-      
+
       strcpy(messageFromPC, strtokIndx);
       strcat(messageFromPC, ",");
       strtokIndx = strtok(NULL, "\n"); //takes the rest of the message
