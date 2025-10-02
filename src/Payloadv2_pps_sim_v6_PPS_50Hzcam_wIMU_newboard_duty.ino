@@ -246,6 +246,11 @@ ISR(INT7_vect) {
   CLR(PORTA, JETSON_REC_PIN);
   CLR(PORTA, JETSON_PWR_PIN);
 
+  if (IMU_pulse_count >= 5) { // at least GPS lock and 200ms
+    IMU_pulse_count = 0;
+    SET(PORTF, HUB_CNTRL_PIN_2);
+  }
+
   flag_pps_high = true;
   cam_pulse_count = 0;
   pps_width_count = 0;
@@ -258,7 +263,7 @@ ISR(INT7_vect) {
 
   // //old timer 5 rate adjustment
   // Serial.println(cam_pps_error);
-  Serial.print("IMU -GPS Pulse GAP: ");
+  // Serial.print("IMU -GPS Pulse GAP: ");
   Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
@@ -271,10 +276,7 @@ ISR(INT7_vect) {
     cam_pps_correction = 0;
   }
 
-  if (IMU_pulse_count >= 5) { // at least GPS lock and 200ms
-    IMU_pulse_count = 0;
-    SET(PORTF, HUB_CNTRL_PIN_2);
-  }
+
 
 
   //pulse Lidar
@@ -316,6 +318,8 @@ ISR(INT5_vect) {
   //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTA, PCB_SYNC_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
+  // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
+  SET(PORTJ, FLIR_BOZON_SYNC_PIN);
 
 
 
@@ -337,27 +341,8 @@ ISR(INT5_vect) {
     pps_width_count = 0;
   }
 
-  // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
-  TOGGLE(PORTJ, FLIR_BOZON_SYNC_PIN);
-
   // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
-  static bool camera_divider = false;
-  camera_divider = !camera_divider;
-
-  if (camera_divider) {
-    TOGGLE(PORTF, HUB_CNTRL_PIN_0); // 25Hz Backfly camera signal
-
-    // Handle asymmetric camera timing for Timer5
-    // TOGGLE(PORTE, CAM_SYNC_PIN);
-    flag_cam_high = !flag_cam_high;
-
-    if (flag_cam_high) {
-      TCNT5 = preload_hi;
-    }
-    else {
-      TCNT5 = preload_lo;
-    }
-  }
+  TOGGLE(PORTF, HUB_CNTRL_PIN_0);
 
 
   if (flag_pps_high && pps_width_count >= 19) {
@@ -373,6 +358,8 @@ ISR(INT5_vect) {
     sendDummyTime();
   }
 
+  delayMicroseconds(200);
+  CLR(PORTJ, FLIR_BOZON_SYNC_PIN);
 }
 
 void sendDummyTime() {
