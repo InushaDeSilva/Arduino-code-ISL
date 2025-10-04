@@ -71,6 +71,7 @@ int cam_pps_error = 0;
 int cam_pps_correction = 0;
 
 unsigned int IMU_pulse_count = 0;
+bool course_correction_flag = true;
 
 // Variables for 2kHz timer correction system
 volatile uint16_t t50_tick = 0;    // Timer3 ticks at last 50 Hz rising edge (IMU)
@@ -126,6 +127,8 @@ char CRCbuffer[buff_len];
 // Timer functions for 2kHz correction system
 // ------------- Timer1: 2 kHz correction loop -------------
 ISR(TIMER1_COMPA_vect) {
+  if (!course_correction_flag) return;
+
   static uint16_t last50 = 0, last1 = 0;
 
   // Latch atomically (they're 16-bit/8-bit volatiles)
@@ -331,6 +334,8 @@ ISR(INT7_vect) {
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
+  if (IMU_pulse_count == 0) course_correction_flag = false;
+
   // //old timer 5 rate adjustment
   // Serial.println(cam_pps_error);
   // Serial.print("IMU -GPS Pulse GAP: ");
@@ -513,6 +518,7 @@ void parseData() {      // split the data into its parts
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
       // Serial.write("No * in NMEA\n");
+      Serial.println("--------");
     }
     //Serial.write(messageFromPC);
   }
@@ -542,6 +548,7 @@ void parseData() {      // split the data into its parts
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
     }
+
   }
   /*strtokIndx = strtok(NULL, ","); // this continues where the previous call left off
   integerFromPC = atoi(strtokIndx);     // convert this part to an integer
