@@ -42,6 +42,18 @@
 #define READ(x,y,z) (z=(x>>y)&1)  // read to z
 #define READ2(x,y) ((x>>y)&1)     // read out
 
+#define JETSON_TOGGLE(state) do { \
+if (state) { \
+  SET(PORTA, JETSON_RST_PIN); \
+  CLR(PORTA, JETSON_REC_PIN); \
+  CLR(PORTA, JETSON_PWR_PIN); \
+} else { \
+  CLR(PORTA, JETSON_RST_PIN); \
+  SET(PORTA, JETSON_REC_PIN); \
+  SET(PORTA, JETSON_PWR_PIN); \
+} \
+} while(0)
+
 // variable for state machines---------------------------------------------------------
 int cam_pulse_count = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_pre = 0;   // stores the pulse count of camera control timer (2x) 
@@ -172,9 +184,7 @@ void setup() {
 
 // Loop functions
 void loop() {
-  //digitalWrite(JETSON_PWR,HIGH);
-  //digitalWrite(JETSON_REC,HIGH);
-  //digitalWrite(JETSON_RST,HIGH);
+
   if (flag_write_serial == true) {
     Serial1.write(messageToLivox);
     Serial.write(messageToLivox);
@@ -230,34 +240,15 @@ void loop() {
    //  Serial.print(Serial2.read());
   //}
   //Serial.print("test");
-
-
-
 }
 
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
-  TOGGLE(PORTA, PCB_PPS_LED_PIN);
-  SET(PORTF, HUB_CNTRL_PIN_1);
+  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
+  TOGGLE(PORTA, PCB_SYNC_LED_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
 
-  //Reset the timer5 to initial condition 
-  SET(PORTA, JETSON_RST_PIN);
-  CLR(PORTA, JETSON_REC_PIN);
-  CLR(PORTA, JETSON_PWR_PIN);
-
-  if (IMU_pulse_count >= 5) { // at least GPS lock and 200ms
-    IMU_pulse_count = 0;
-    SET(PORTF, HUB_CNTRL_PIN_2);
-  }
-
-  flag_pps_high = true;
-  cam_pulse_count = 0;
-  pps_width_count = 0;
-  if (cam_pulse_count_for_GPRMC < 100) {
-    sendDummyTime();
-  }
-  cam_pulse_count_for_GPRMC = 0;
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
@@ -276,34 +267,8 @@ ISR(INT7_vect) {
     cam_pps_correction = 0;
   }
 
-
-
-
-  //pulse Lidar
-  //SET(PORTA,JETSON_RST_PIN);
-  //CLR(PORTA,JETSON_REC_PIN);
-  //pps_width_count = 0;
-  //flag_pps_high = true;
-  //TCNT5 = 25536; // camera 50 cycle start 
-  //SET(PORTF,EXT_CNTRL2_PIN); // Lidar PPS pin
-
-  //force camera to trigger
-  //cam_pulse_count_pre = cam_pulse_count;
-  //cam_pulse_count = 0;
-  //flag_cam_high = true;
-  //SET(PORTE,CAM_SYNC_PIN); // 25Hz pulse width 50%
-  //SET(PORTF,EXT_CNTRL3_PIN);
-  //TCNT5 = preload_hi;
-
   delayMicroseconds(40000);
   CLR(PORTF, HUB_CNTRL_PIN_1);
-
-
-
-  //Timer 5 force overflow and adjust rate
-
-  //over flow interupt checks Turn off lidar pulse at 380ms
-  //over flow interupt checks toggle the camera sync 25Hz pulse 50% duty
 }
 
 
@@ -331,10 +296,7 @@ ISR(INT5_vect) {
 
 
   if (cam_pulse_count >= 50) {
-    SET(PORTA, JETSON_RST_PIN);
-    CLR(PORTA, JETSON_REC_PIN);
-    CLR(PORTA, JETSON_PWR_PIN);
-
+    JETSON_TOGGLE(true);
 
     flag_pps_high = true;
     cam_pulse_count = 0;
@@ -346,9 +308,7 @@ ISR(INT5_vect) {
 
 
   if (flag_pps_high && pps_width_count >= 19) {
-    CLR(PORTA, JETSON_RST_PIN);
-    SET(PORTA, JETSON_REC_PIN);
-    SET(PORTA, JETSON_PWR_PIN);
+    JETSON_TOGGLE(false);
 
     flag_pps_high = false;
     pps_width_count = 0;
