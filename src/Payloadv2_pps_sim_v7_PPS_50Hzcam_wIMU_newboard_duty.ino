@@ -502,13 +502,19 @@ void sendDummyTime() {
   cam_pulse_count_for_GPRMC = 0;
   //prepare the message
   char time_str[] = "000000";
+  char phase_error_str[16];  // Buffer for phase error string
   byte crc_calc = 0;
   char crc_str[] = "4C";
   memset(messageToLivox, 0, strlen(messageToLivox));
   strcat(messageToLivox, "$GPRMC,");
   sprintf(time_str, "%02d%02d%02d", hh, mm, ss);
   strcat(messageToLivox, time_str);
-  strcat(messageToLivox, ".00,A,2237.496474,N,11356.089515,E,0.0,225.5,230520,2.3,S,A*");
+
+  // Convert phase_error_us to string and use instead of hardcoded coordinates
+  dtostrf(phase_error_us, 10, 6, phase_error_str);  // 10 total width, 6 decimal places
+  strcat(messageToLivox, ".00,A,");
+  strcat(messageToLivox, phase_error_str);
+  strcat(messageToLivox, ",N,11356.089515,E,0.0,225.5,230520,2.3,S,A*");
   crc_calc = convertToCRC(messageToLivox);
   sprintf(crc_str, "%X", crc_calc);
   strcat(messageToLivox, crc_str);
