@@ -55,7 +55,7 @@ if (state) { \
 } while(0)
 
 // variable for state machines---------------------------------------------------------
-int cam_pulse_count = 0;   // stores the pulse count of camera control timer (2x) 
+int IMU_pulse_count = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_pre = 0;   // stores the pulse count of camera control timer (2x) 
 int cam_pulse_count_for_GPRMC = 0;   // stores the pulse count of camera control timer -for GPRMC write (2x) 
 int gps_pulse_count = 0;
@@ -143,7 +143,7 @@ ISR(TIMER1_COMPA_vect) {
     cli();
     uint8_t f1 = new1;  // GPS PPS flag
     uint16_t gps_tick = t1_tick;
-    uint8_t current_imu_count = cam_pulse_count;
+    uint8_t current_imu_count = IMU_pulse_count;
     new1 = 0;  // Clear GPS flag
     SREG = s;
 
@@ -153,7 +153,7 @@ ISR(TIMER1_COMPA_vect) {
       last_imu_count_at_gps = current_imu_count;
 
       // Calculate offset: how far GPS PPS is from IMU count=0 (perfect 1s boundary)
-      // cam_pulse_count ranges from 0-49 (50 counts = 1 second)
+      // IMU_pulse_count ranges from 0-49 (50 counts = 1 second)
       // Offset tells us how many IMU counts GPS PPS is "late" or "early"
       gps_imu_offset = current_imu_count;
 
@@ -165,6 +165,7 @@ ISR(TIMER1_COMPA_vect) {
       if (gps_imu_offset == 0) {
         // Perfect sync
         course_correction_count = 0;
+        course_correction_flag = false;
       }
       else if (gps_imu_offset > 0) {
         // GPS is late, so speed up by reducing IMU count period
@@ -357,8 +358,7 @@ void loop() {
   if (millis() - last_debug > 1000) {
 
     if (course_correction_flag) {
-      Serial.print("Course correction - IMU count: ");
-      Serial.print(cam_pulse_count);
+      Serial.print(" Course correction ");
       Serial.print(" GPS offset: ");
       Serial.print(gps_imu_offset);
       Serial.print(" counts (");
@@ -366,12 +366,14 @@ void loop() {
       Serial.println(" ms)");
     }
     else {
-      Serial.print("Fine correction - Phase Error: ");
+      Serial.print(" Course GPS offset: ");
+      Serial.print(gps_imu_offset);
+      Serial.print(" Fine correction - Phase Error: ");
       Serial.print(phase_error_us);
       Serial.print(" µs (");
       Serial.print(phase_error_ticks);
       Serial.print(" ticks) IMU: ");
-      Serial.println(cam_pulse_count);
+      Serial.println(IMU_pulse_count);
     }
 
     // Debug interrupt status
@@ -427,7 +429,7 @@ ISR(INT5_vect) {
   new50 = 1;                   // Flag new 50Hz edge
 
   pps_width_count++;
-  cam_pulse_count++;
+  IMU_pulse_count++;
   cam_pulse_count_for_GPRMC++;
   pulse_count_for_sim_pps_led++;
   pulse_count_for_gps_pps_led++;
@@ -440,12 +442,12 @@ ISR(INT5_vect) {
   SET(PORTJ, FLIR_BOZON_SYNC_PIN);
 
   
-  if (cam_pulse_count >= 50 + course_correction_count) {
+  if (IMU_pulse_count >= 50 + course_correction_count) {
     
     JETSON_TOGGLE(true);
     SET(PORTF, HUB_CNTRL_PIN_2);
     flag_pps_high = true;
-    cam_pulse_count = 0;
+    IMU_pulse_count = 0;
     pps_width_count = 0;
     pulse_count_for_sim_pps_led = 0;
   }
