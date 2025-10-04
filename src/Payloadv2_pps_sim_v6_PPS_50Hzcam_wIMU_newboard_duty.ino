@@ -323,14 +323,14 @@ ISR(INT5_vect) {
 
 
 
-  if (IMU_pulse_count > 25) {
+  if (IMU_pulse_count >= 25) {
     // every 500ms
     TOGGLE(PORTF, HUB_CNTRL_PIN_2);
     IMU_pulse_count = 0;
   }
 
 
-  if (cam_pulse_count > 50) {
+  if (cam_pulse_count >= 50) {
     SET(PORTA, JETSON_RST_PIN);
     CLR(PORTA, JETSON_REC_PIN);
     CLR(PORTA, JETSON_PWR_PIN);
