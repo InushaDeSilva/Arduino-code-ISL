@@ -71,6 +71,7 @@ int cam_pps_error = 0;
 int cam_pps_correction = 0;
 
 unsigned int IMU_pulse_count = 0;
+bool gps_connected = false;
 bool course_correction_flag = true;
 
 // Variables for 2kHz timer correction system
@@ -127,8 +128,12 @@ char CRCbuffer[buff_len];
 // Timer functions for 2kHz correction system
 // ------------- Timer1: 2 kHz correction loop -------------
 ISR(TIMER1_COMPA_vect) {
-  if (course_correction_flag) return;
+  if (course_correction_flag) {
+    if (!gps_connected) return;
 
+    
+  }
+  else {
   static uint16_t last50 = 0, last1 = 0;
 
   // Latch atomically (they're 16-bit/8-bit volatiles)
@@ -153,6 +158,7 @@ ISR(TIMER1_COMPA_vect) {
   // --- Correction logic can be added here ---
   // This runs every 500µs (2kHz) to monitor and correct synchronization
   // You can implement PI control or other correction algorithms here
+}
 }
 
 static void timer1_start_2kHz() {
@@ -225,21 +231,25 @@ void setup() {
 
   Serial.println("\nSystem Booting...");
 
+  // Initialize timers BEFORE interrupts to avoid conflicts
+  timer3_start_timebase();     // Free-running 0.5 µs ticks for timestamps
+  Serial.println("Timer3 timebase started");
+
   // 2) define levels for INT7 (PE7) and INT5 (PE5)
   DDRE &= ~((1 << PE7) | (1 << PE5));   // inputs
   PORTE |= ((1 << PE7) | (1 << PE5));   // pull-ups ON (remove later if your sources drive the lines)
+
   // Clear any pending flags *before* enabling
   EIFR |= (1 << INTF7) | (1 << INTF5);
+
   // Rising edge on INT7 and INT5; enable both
   EICRB |= (1 << ISC71) | (1 << ISC70) | (1 << ISC51) | (1 << ISC50);
   EIMSK |= (1 << INT7) | (1 << INT5);
 
   interrupts();
+  Serial.println("External interrupts for GPS and IMU enabled");
 
-  Serial.println("Interrupts for GPS and Camera PPS enabled");
-
-  // Initialize 2kHz correction timer system
-  timer3_start_timebase();     // Free-running 0.5 µs ticks for timestamps
+  // Start 2kHz correction timer AFTER external interrupts are working
   timer1_start_2kHz();         // 2 kHz correction loop
   Serial.println("2kHz correction timer system enabled");
 
@@ -292,21 +302,30 @@ void loop() {
       flag_write_serial2 = false;*/
       //}
 
-  // Optional: Debug phase error monitoring (every ~1 second)
+  // Optional: Debug monitoring (every ~1 second)
   static unsigned long last_debug = 0;
   if (millis() - last_debug > 1000) {
 
     if (course_correction_flag) {
-
+      Serial.print("Course correction active. IMU count: ");
+      Serial.println(IMU_pulse_count);
     }
-    else{
+    else {
       Serial.print("Phase Error: ");
-    Serial.print(phase_error_us);
-    Serial.print(" µs (");
-    Serial.print(phase_error_ticks);
-    Serial.println(" ticks)");
+      Serial.print(phase_error_us);
+      Serial.print(" µs (");
+      Serial.print(phase_error_ticks);
+      Serial.print(" ticks) IMU: ");
+      Serial.println(IMU_pulse_count);
+    }
+
+    // Debug interrupt status
+    Serial.print("EIMSK: 0x");
+    Serial.print(EIMSK, HEX);
+    Serial.print(" EICRB: 0x");
+    Serial.println(EICRB, HEX);
+
     last_debug = millis();
-  }
   }
 
    //Process GPS
@@ -329,37 +348,19 @@ void loop() {
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
-  Serial.println("INT7_vect");
-  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
-  TOGGLE(PORTA, PCB_SYNC_LED_PIN);
-  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
   // Capture timestamp first for precise timing
   t1_tick = TCNT3;             // 0.5 µs/tick timestamp
   new1 = 1;                    // Flag new 1Hz edge
-
+  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
+  TOGGLE(PORTA, PCB_PPS_LED_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_1);
 
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
   if (IMU_pulse_count == 0) course_correction_flag = false;
 
-  // //old timer 5 rate adjustment
-  // Serial.println(cam_pps_error);
-  // Serial.print("IMU -GPS Pulse GAP: ");
-  // Serial.println(IMU_pulse_count);
-  //this values shuodl be minimized to noise level (50) by adjusting rate
-  if (cam_pps_error > 50) {
-    cam_pps_correction = 20; //this is not implemented
-  }
-  else if (cam_pps_error < -50) {
-    cam_pps_correction = -20;
-  }
-  else {
-    cam_pps_correction = 0;
-  }
-
-  delayMicroseconds(40000);
-  CLR(PORTF, HUB_CNTRL_PIN_1);
+  if (!gps_connected) gps_connected = true;
 }
 
 
@@ -381,14 +382,11 @@ ISR(INT5_vect) {
   // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
   SET(PORTJ, FLIR_BOZON_SYNC_PIN);
 
-
-
   if (IMU_pulse_count >= 25) {
     // every 500ms
     TOGGLE(PORTF, HUB_CNTRL_PIN_2);
     IMU_pulse_count = 0;
   }
-
 
   if (cam_pulse_count >= 50) {
     JETSON_TOGGLE(true);
@@ -401,7 +399,6 @@ ISR(INT5_vect) {
   // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
   TOGGLE(PORTF, HUB_CNTRL_PIN_0);
 
-
   if (flag_pps_high && pps_width_count >= 19) {
     JETSON_TOGGLE(false);
 
@@ -413,7 +410,6 @@ ISR(INT5_vect) {
     sendDummyTime();
   }
 
-  delayMicroseconds(200);
   CLR(PORTJ, FLIR_BOZON_SYNC_PIN);
 }
 
