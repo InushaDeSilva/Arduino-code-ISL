@@ -70,9 +70,11 @@ unsigned int max_val = 65535;
 int cam_pps_error = 0;
 int cam_pps_correction = 0;
 
-unsigned int IMU_pulse_count = 0;
+unsigned int pulse_count_for_sim_pps_led = 0;
+unsigned int pulse_count_for_gps_pps_led = 0;
 bool gps_connected = false;
 bool course_correction_flag = true;
+int course_correction_count = 0;
 
 // Variables for 2kHz timer correction system
 volatile uint16_t t50_tick = 0;    // Timer3 ticks at last 50 Hz rising edge (IMU)
@@ -81,6 +83,7 @@ volatile uint8_t  new50 = 0;       // flags to indicate new edge captured
 volatile uint8_t  new1 = 0;
 volatile int16_t  phase_error_ticks = 0;  // Latest phase error in timer ticks
 volatile float    phase_error_us = 0.0;   // Latest phase error in microseconds
+volatile int8_t   gps_imu_offset = 0;     // GPS PPS offset in IMU counts (course correction mode)
 
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
@@ -131,34 +134,81 @@ ISR(TIMER1_COMPA_vect) {
   if (course_correction_flag) {
     if (!gps_connected) return;
 
-    
+    // Course correction mode: measure GPS PPS offset from IMU count boundaries
+    static uint16_t last_gps_tick = 0;
+    static uint8_t last_imu_count_at_gps = 0;
+
+    // Latch atomically
+    uint8_t s = SREG;
+    cli();
+    uint8_t f1 = new1;  // GPS PPS flag
+    uint16_t gps_tick = t1_tick;
+    uint8_t current_imu_count = cam_pulse_count;
+    new1 = 0;  // Clear GPS flag
+    SREG = s;
+
+    // When GPS PPS arrives, calculate how many IMU counts it's offset
+    if (f1) {
+      last_gps_tick = gps_tick;
+      last_imu_count_at_gps = current_imu_count;
+
+      // Calculate offset: how far GPS PPS is from IMU count=0 (perfect 1s boundary)
+      // cam_pulse_count ranges from 0-49 (50 counts = 1 second)
+      // Offset tells us how many IMU counts GPS PPS is "late" or "early"
+      gps_imu_offset = current_imu_count;
+
+      // If offset > 25, GPS is closer to next second boundary (early for next second)
+      if (gps_imu_offset > 25) {
+        gps_imu_offset = gps_imu_offset - 50;  // Convert to "early" offset
+      }
+
+      if (gps_imu_offset == 0) {
+        // Perfect sync
+        course_correction_count = 0;
+      }
+      else if (gps_imu_offset > 0) {
+        // GPS is late, so speed up by reducing IMU count period
+        // Each IMU count is nominally 20ms (50Hz)
+        // To correct by 1 IMU count, we need to shorten the period by 20ms   
+        course_correction_count = 1; 
+      }
+      else {
+        // GPS is early, so slow down by increasing IMU count period
+        // Similar logic applies, but we increase the period
+        course_correction_count = -1; 
+      }
+
+      // Store the phase error in terms of IMU counts and microseconds
+      phase_error_ticks = gps_imu_offset * 40000;  // Each IMU count = 20ms = 40000 Timer3 ticks (0.5µs each)
+      phase_error_us = (float)gps_imu_offset * 20000.0f;  // Each IMU count = 20000µs
+    }
   }
   else {
-  static uint16_t last50 = 0, last1 = 0;
+    // Fine correction mode: precise timestamp-based measurement
+    static uint16_t last50 = 0, last1 = 0;
 
-  // Latch atomically (they're 16-bit/8-bit volatiles)
-  uint8_t s = SREG;
-  cli();
-  uint16_t t50 = t50_tick;
-  uint16_t t1 = t1_tick;
-  uint8_t  f50 = new50;
-  uint8_t  f1 = new1;
-  new50 = 0;
-  new1 = 0;
-  SREG = s;
+    // Latch atomically (they're 16-bit/8-bit volatiles)
+    uint8_t s = SREG;
+    cli();
+    uint16_t t50 = t50_tick;
+    uint16_t t1 = t1_tick;
+    uint8_t  f50 = new50;
+    uint8_t  f1 = new1;
+    new50 = 0;
+    new1 = 0;
+    SREG = s;
 
-  // If you got new edges, update "lasts"
-  if (f50) last50 = t50;
-  if (f1)  last1 = t1;
+    // If you got new edges, update "lasts"
+    if (f50) last50 = t50;
+    if (f1)  last1 = t1;
 
-  // Phase error in ticks (±32767 range), convert to microseconds
-  phase_error_ticks = (int16_t)(last50 - last1);     // 50Hz time - 1Hz time
-  phase_error_us = 0.5f * (float)phase_error_ticks;  // 0.5 µs per tick
+    // Phase error in ticks (±32767 range), convert to microseconds
+    phase_error_ticks = (int16_t)(last50 - last1);     // 50Hz time - 1Hz time
+    phase_error_us = 0.5f * (float)phase_error_ticks;  // 0.5 µs per tick
 
-  // --- Correction logic can be added here ---
-  // This runs every 500µs (2kHz) to monitor and correct synchronization
-  // You can implement PI control or other correction algorithms here
-}
+    // --- Fine correction logic can be added here ---
+    // This runs every 500µs (2kHz) to monitor and correct synchronization
+  }
 }
 
 static void timer1_start_2kHz() {
@@ -307,16 +357,21 @@ void loop() {
   if (millis() - last_debug > 1000) {
 
     if (course_correction_flag) {
-      Serial.print("Course correction active. IMU count: ");
-      Serial.println(IMU_pulse_count);
+      Serial.print("Course correction - IMU count: ");
+      Serial.print(cam_pulse_count);
+      Serial.print(" GPS offset: ");
+      Serial.print(gps_imu_offset);
+      Serial.print(" counts (");
+      Serial.print(phase_error_us / 1000.0f);
+      Serial.println(" ms)");
     }
     else {
-      Serial.print("Phase Error: ");
+      Serial.print("Fine correction - Phase Error: ");
       Serial.print(phase_error_us);
       Serial.print(" µs (");
       Serial.print(phase_error_ticks);
       Serial.print(" ticks) IMU: ");
-      Serial.println(IMU_pulse_count);
+      Serial.println(cam_pulse_count);
     }
 
     // Debug interrupt status
@@ -353,12 +408,13 @@ ISR(INT7_vect) {
   new1 = 1;                    // Flag new 1Hz edge
   //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTA, PCB_PPS_LED_PIN);
-  TOGGLE(PORTF, HUB_CNTRL_PIN_1);
+  SET(PORTF, HUB_CNTRL_PIN_1);
+  pulse_count_for_gps_pps_led=0;
 
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
 
-  if (IMU_pulse_count == 0) course_correction_flag = false;
+  // if (IMU_pulse_count == 0) course_correction_flag = false;
 
   if (!gps_connected) gps_connected = true;
 }
@@ -373,7 +429,8 @@ ISR(INT5_vect) {
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
-  IMU_pulse_count++;
+  pulse_count_for_sim_pps_led++;
+  pulse_count_for_gps_pps_led++;
   //TCNT5 = 25536;
 
   //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
@@ -382,24 +439,32 @@ ISR(INT5_vect) {
   // FLIR BOZON: Simple 50Hz sync - toggle every IMU interrupt
   SET(PORTJ, FLIR_BOZON_SYNC_PIN);
 
-  if (IMU_pulse_count >= 25) {
-    // every 500ms
-    TOGGLE(PORTF, HUB_CNTRL_PIN_2);
-    IMU_pulse_count = 0;
-  }
-
-  if (cam_pulse_count >= 50) {
+  
+  if (cam_pulse_count >= 50 + course_correction_count) {
+    
     JETSON_TOGGLE(true);
-
+    SET(PORTF, HUB_CNTRL_PIN_2);
     flag_pps_high = true;
     cam_pulse_count = 0;
     pps_width_count = 0;
+    pulse_count_for_sim_pps_led = 0;
+  }
+
+
+  if (pulse_count_for_sim_pps_led >= 25 + course_correction_count) { // toggle every 20ms*25=500ms
+    CLR(PORTF, HUB_CNTRL_PIN_2);
+    
+  }
+
+  if (pulse_count_for_gps_pps_led >= 25 ) { // toggle every 20ms*25=500ms
+    CLR(PORTF, HUB_CNTRL_PIN_1);
+
   }
 
   // Backfly Camera: 25Hz sync - toggle every OTHER IMU interrupt (50Hz/2 = 25Hz)
   TOGGLE(PORTF, HUB_CNTRL_PIN_0);
 
-  if (flag_pps_high && pps_width_count >= 19) {
+  if (flag_pps_high && pps_width_count >= 19 + course_correction_count) {
     JETSON_TOGGLE(false);
 
     flag_pps_high = false;
