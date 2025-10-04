@@ -127,7 +127,7 @@ char CRCbuffer[buff_len];
 // Timer functions for 2kHz correction system
 // ------------- Timer1: 2 kHz correction loop -------------
 ISR(TIMER1_COMPA_vect) {
-  if (!course_correction_flag) return;
+  if (course_correction_flag) return;
 
   static uint16_t last50 = 0, last1 = 0;
 
@@ -295,12 +295,18 @@ void loop() {
   // Optional: Debug phase error monitoring (every ~1 second)
   static unsigned long last_debug = 0;
   if (millis() - last_debug > 1000) {
-    Serial.print("Phase Error: ");
+
+    if (course_correction_flag) {
+
+    }
+    else{
+      Serial.print("Phase Error: ");
     Serial.print(phase_error_us);
     Serial.print(" µs (");
     Serial.print(phase_error_ticks);
     Serial.println(" ticks)");
     last_debug = millis();
+  }
   }
 
    //Process GPS
@@ -323,13 +329,14 @@ void loop() {
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
+  Serial.println("INT7_vect");
+  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
+  TOGGLE(PORTA, PCB_SYNC_LED_PIN);
+  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
   // Capture timestamp first for precise timing
   t1_tick = TCNT3;             // 0.5 µs/tick timestamp
   new1 = 1;                    // Flag new 1Hz edge
 
-  //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
-  TOGGLE(PORTA, PCB_SYNC_LED_PIN);
-  TOGGLE(PORTF, HUB_CNTRL_PIN_3);
 
   cam_pps_error = max_val - TCNT5;
   TCNT5 = preload_hi;
