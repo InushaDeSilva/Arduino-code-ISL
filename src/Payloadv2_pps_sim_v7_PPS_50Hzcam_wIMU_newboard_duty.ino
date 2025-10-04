@@ -72,6 +72,13 @@ int cam_pps_correction = 0;
 
 unsigned int IMU_pulse_count = 0;
 
+// Variables for 2kHz timer correction system
+volatile uint16_t t50_tick = 0;    // Timer3 ticks at last 50 Hz rising edge (IMU)
+volatile uint16_t t1_tick = 0;     // Timer3 ticks at last 1 Hz rising edge (GPS)
+volatile uint8_t  new50 = 0;       // flags to indicate new edge captured
+volatile uint8_t  new1 = 0;
+volatile int16_t  phase_error_ticks = 0;  // Latest phase error in timer ticks
+volatile float    phase_error_us = 0.0;   // Latest phase error in microseconds
 
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
@@ -115,6 +122,58 @@ bool newData = false;
 
 const byte buff_len = 90;
 char CRCbuffer[buff_len];
+
+// Timer functions for 2kHz correction system
+// ------------- Timer1: 2 kHz correction loop -------------
+ISR(TIMER1_COMPA_vect) {
+  static uint16_t last50 = 0, last1 = 0;
+
+  // Latch atomically (they're 16-bit/8-bit volatiles)
+  uint8_t s = SREG;
+  cli();
+  uint16_t t50 = t50_tick;
+  uint16_t t1 = t1_tick;
+  uint8_t  f50 = new50;
+  uint8_t  f1 = new1;
+  new50 = 0;
+  new1 = 0;
+  SREG = s;
+
+  // If you got new edges, update "lasts"
+  if (f50) last50 = t50;
+  if (f1)  last1 = t1;
+
+  // Phase error in ticks (±32767 range), convert to microseconds
+  phase_error_ticks = (int16_t)(last50 - last1);     // 50Hz time - 1Hz time
+  phase_error_us = 0.5f * (float)phase_error_ticks;  // 0.5 µs per tick
+
+  // --- Correction logic can be added here ---
+  // This runs every 500µs (2kHz) to monitor and correct synchronization
+  // You can implement PI control or other correction algorithms here
+}
+
+static void timer1_start_2kHz() {
+  cli();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  // CTC mode (WGM12=1), no OC pins
+  TCCR1B |= _BV(WGM12);
+  OCR1A = 999;                 // 2 kHz at prescaler /8
+  TIMSK1 |= _BV(OCIE1A);       // enable compare A interrupt
+  TCCR1B |= _BV(CS11);         // prescaler /8
+  sei();
+}
+
+static void timer3_start_timebase() {
+  cli();
+  TCCR3A = 0;
+  TCCR3B = 0;                  // normal mode
+  TCNT3 = 0;
+  TIFR3 = _BV(TOV3);          // clear any pending overflow
+  // prescaler /8 → 0.5 µs per tick
+  TCCR3B |= _BV(CS31);
+  sei();
+}
 
 // setup
 void setup() {
@@ -176,6 +235,11 @@ void setup() {
 
   Serial.println("Interrupts for GPS and Camera PPS enabled");
 
+  // Initialize 2kHz correction timer system
+  timer3_start_timebase();     // Free-running 0.5 µs ticks for timestamps
+  timer1_start_2kHz();         // 2 kHz correction loop
+  Serial.println("2kHz correction timer system enabled");
+
   //SET(PORTE,CAM_SYNC_PIN);
   SET(PORTF, HUB_CNTRL_PIN_0); //HUB Power LED pin - now driving the Backlfy camera
 
@@ -225,6 +289,17 @@ void loop() {
       flag_write_serial2 = false;*/
       //}
 
+  // Optional: Debug phase error monitoring (every ~1 second)
+  static unsigned long last_debug = 0;
+  if (millis() - last_debug > 1000) {
+    Serial.print("Phase Error: ");
+    Serial.print(phase_error_us);
+    Serial.print(" µs (");
+    Serial.print(phase_error_ticks);
+    Serial.println(" ticks)");
+    last_debug = millis();
+  }
+
    //Process GPS
   recvWithStartEndMarkers();
   if (newData == true) {
@@ -245,6 +320,10 @@ void loop() {
 // ISR -  PC inturupts - Masked Block 2
 // This is only invoked when GPS PPS is there -1Hz(1000ms)
 ISR(INT7_vect) {
+  // Capture timestamp first for precise timing
+  t1_tick = TCNT3;             // 0.5 µs/tick timestamp
+  new1 = 1;                    // Flag new 1Hz edge
+
   //flag_cam_high = READ2(PORTE,CAM_SYNC_PIN);
   TOGGLE(PORTA, PCB_SYNC_LED_PIN);
   TOGGLE(PORTF, HUB_CNTRL_PIN_3);
@@ -255,7 +334,7 @@ ISR(INT7_vect) {
   // //old timer 5 rate adjustment
   // Serial.println(cam_pps_error);
   // Serial.print("IMU -GPS Pulse GAP: ");
-  Serial.println(IMU_pulse_count);
+  // Serial.println(IMU_pulse_count);
   //this values shuodl be minimized to noise level (50) by adjusting rate
   if (cam_pps_error > 50) {
     cam_pps_correction = 20; //this is not implemented
@@ -274,6 +353,10 @@ ISR(INT7_vect) {
 
 // External Interrupt from IMU at 50HZ (20ms)
 ISR(INT5_vect) {
+  // Capture timestamp first for precise timing
+  t50_tick = TCNT3;            // 0.5 µs/tick timestamp  
+  new50 = 1;                   // Flag new 50Hz edge
+
   pps_width_count++;
   cam_pulse_count++;
   cam_pulse_count_for_GPRMC++;
@@ -429,7 +512,7 @@ void parseData() {      // split the data into its parts
     }
     else {
       memset(messageFromPC, 0, strlen(messageFromPC));
-      Serial.write("No * in NMEA\n");
+      // Serial.write("No * in NMEA\n");
     }
     //Serial.write(messageFromPC);
   }
