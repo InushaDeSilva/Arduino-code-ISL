@@ -168,14 +168,13 @@ ISR(TIMER1_COMPA_vect) {
         course_correction_flag = false;
       }
       else if (gps_imu_offset > 0) {
-        // GPS is late, so speed up by reducing IMU count period
+        // GPS is late, so slow down by increasing IMU count period
         // Each IMU count is nominally 20ms (50Hz)
-        // To correct by 1 IMU count, we need to shorten the period by 20ms   
         course_correction_count = 1; 
       }
       else {
-        // GPS is early, so slow down by increasing IMU count period
-        // Similar logic applies, but we increase the period
+        // GPS is early, so speed up by decreasing IMU count period
+        // Similar logic applies, but we decrease the period
         course_correction_count = -1; 
       }
 
@@ -226,7 +225,7 @@ static void timer1_start_2kHz() {
 
 static void timer3_start_timebase() {
   cli();
-  TCCR3A = 0;
+  TCCR3A = 0; 
   TCCR3B = 0;                  // normal mode
   TCNT3 = 0;
   TIFR3 = _BV(TOV3);          // clear any pending overflow
