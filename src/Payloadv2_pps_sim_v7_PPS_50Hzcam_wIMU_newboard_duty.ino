@@ -91,6 +91,12 @@ volatile uint16_t gps_timestamp = 0;              // Timer3 timestamp when GPS P
 volatile bool waiting_for_imu0 = false;           // Flag indicating we're waiting for next IMU count 0
 volatile uint16_t imu0_timestamp = 0;             // Timer3 timestamp when IMU count 0 occurred
 
+// GPS PPS tick measurement variables
+volatile uint16_t gps_pps_tick_previous = 0;      // Previous GPS PPS timestamp
+volatile uint32_t gps_pps_tick_count = 0;        // Measured ticks between GPS PPS (accounting for overflow)
+volatile bool gps_pps_tick_valid = false;        // Flag indicating valid measurement
+volatile uint8_t gps_pps_overflow_count = 0;     // Count of Timer3 overflows between GPS PPS
+
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
 long gps_tmr_val_pre = 0;
@@ -244,6 +250,7 @@ static void timer3_start_timebase() {
   TCCR3B = 0;                  // normal mode
   TCNT3 = 0;
   TIFR3 = _BV(TOV3);          // clear any pending overflow
+  TIMSK3 |= _BV(TOIE3);       // enable Timer3 overflow interrupt for GPS PPS tick counting
   // prescaler /8 → 0.5 µs per tick
   TCCR3B |= _BV(CS31);
   sei();
@@ -389,6 +396,16 @@ void loop() {
       Serial.print(" ticks) IMU: ");
       Serial.print(IMU_pulse_count);
       
+      // Show GPS PPS tick measurement for verification
+      if (gps_pps_tick_valid) {
+        Serial.print(" GPS_PPS_Period: ");
+        Serial.print(gps_pps_tick_count);
+        Serial.print(" ticks (");
+        Serial.print(gps_pps_tick_count * 0.5f);
+        Serial.print(" µs)");
+        gps_pps_tick_valid = false;  // Clear flag after printing
+      }
+      
       // Show measurement status
       if (fine_measurement_active) {
         Serial.print(" [Active");
@@ -463,8 +480,35 @@ ISR(INT7_vect) {
     // Reset for next measurement
     imu0_timestamp = 0;
   }
+  
+  // Measure time between GPS PPS pulses for tick verification
+  if (gps_pps_tick_previous != 0) {
+    // Calculate ticks between GPS PPS pulses (accounting for overflow)
+    uint32_t current_ticks = t1_tick;
+    uint32_t prev_ticks = gps_pps_tick_previous;
+    
+    // Add overflow compensation (Timer3 is 16-bit, overflows at 65536)
+    current_ticks += (uint32_t)gps_pps_overflow_count * 65536UL;
+    
+    if (current_ticks >= prev_ticks) {
+      gps_pps_tick_count = current_ticks - prev_ticks;
+    } else {
+      // Handle rare case where we miss overflow count
+      gps_pps_tick_count = (current_ticks + 65536UL) - prev_ticks;
+    }
+    
+    gps_pps_tick_valid = true;
+  }
+  
+  // Store current tick for next measurement
+  gps_pps_tick_previous = t1_tick;
+  gps_pps_overflow_count = 0;  // Reset overflow counter
 }
 
+// Timer3 overflow ISR - for GPS PPS tick counting
+ISR(TIMER3_OVF_vect) {
+  gps_pps_overflow_count++;
+}
 
 // External Interrupt from IMU at 50HZ (20ms)
 ISR(INT5_vect) {
