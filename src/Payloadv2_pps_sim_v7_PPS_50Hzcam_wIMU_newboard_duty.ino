@@ -85,6 +85,12 @@ volatile int16_t  phase_error_ticks = 0;  // Latest phase error in timer ticks
 volatile float    phase_error_us = 0.0;   // Latest phase error in microseconds
 volatile int8_t   gps_imu_offset = 0;     // GPS PPS offset in IMU counts (course correction mode)
 
+// Fine correction measurement variables
+volatile bool fine_measurement_active = false;     // Flag indicating we're measuring GPS to IMU0 timing
+volatile uint16_t gps_timestamp = 0;              // Timer3 timestamp when GPS PPS occurred
+volatile bool waiting_for_imu0 = false;           // Flag indicating we're waiting for next IMU count 0
+volatile uint16_t imu0_timestamp = 0;             // Timer3 timestamp when IMU count 0 occurred
+
 //variables for pps syncing
 unsigned int gps_pps_period = 0;
 long gps_tmr_val_pre = 0;
@@ -135,22 +141,17 @@ ISR(TIMER1_COMPA_vect) {
     if (!gps_connected) return;
 
     // Course correction mode: measure GPS PPS offset from IMU count boundaries
-    static uint16_t last_gps_tick = 0;
-    static uint8_t last_imu_count_at_gps = 0;
-
+    
     // Latch atomically
     uint8_t s = SREG;
     cli();
     uint8_t f1 = new1;  // GPS PPS flag
-    uint16_t gps_tick = t1_tick;
     uint8_t current_imu_count = IMU_pulse_count;
     new1 = 0;  // Clear GPS flag
     SREG = s;
 
     // When GPS PPS arrives, calculate how many IMU counts it's offset
     if (f1) {
-      last_gps_tick = gps_tick;
-      last_imu_count_at_gps = current_imu_count;
 
       // Calculate offset: how far GPS PPS is from IMU count=0 (perfect 1s boundary)
       // IMU_pulse_count ranges from 0-49 (50 counts = 1 second)
@@ -163,9 +164,13 @@ ISR(TIMER1_COMPA_vect) {
       }
 
       if (gps_imu_offset == 0) {
-        // Perfect sync
+        // Perfect sync achieved - start fine measurement mode
         course_correction_count = 0;
         course_correction_flag = false;
+        
+        // Start fine measurement: wait for next GPS PPS to measure precise timing to IMU0
+        fine_measurement_active = true;
+        waiting_for_imu0 = false;
       }
       else if (gps_imu_offset > 0) {
         // GPS is late, so slow down by increasing IMU count period
@@ -184,30 +189,40 @@ ISR(TIMER1_COMPA_vect) {
     }
   }
   else {
-    // Fine correction mode: precise timestamp-based measurement
-    static uint16_t last50 = 0, last1 = 0;
-
-    // Latch atomically (they're 16-bit/8-bit volatiles)
+    // Fine correction mode: measure GPS PPS to next IMU count 0 timing
     uint8_t s = SREG;
     cli();
-    uint16_t t50 = t50_tick;
-    uint16_t t1 = t1_tick;
-    uint8_t  f50 = new50;
-    uint8_t  f1 = new1;
-    new50 = 0;
-    new1 = 0;
+    uint8_t f1 = new1;  // GPS PPS flag
+    bool measurement_ready = fine_measurement_active && waiting_for_imu0 && (imu0_timestamp != 0);
+    new1 = 0;  // Clear GPS flag
     SREG = s;
 
-    // If you got new edges, update "lasts"
-    if (f50) last50 = t50;
-    if (f1)  last1 = t1;
+    // Check if we have a completed measurement (GPS PPS -> IMU count 0)
+    if (measurement_ready) {
+      // Calculate the time difference between GPS PPS and the next IMU count 0
+      int32_t time_diff_ticks = (int32_t)imu0_timestamp - (int32_t)gps_timestamp;
+      
+      // Handle timer overflow case (Timer3 is 16-bit)
+      if (time_diff_ticks < 0) {
+        time_diff_ticks += 65536;  // Add full timer range
+      }
+      
+      // Ideal time from GPS PPS to next IMU count 0 should be 0 (perfect sync)
+      // Any deviation is our phase error
+      phase_error_ticks = (int16_t)time_diff_ticks;
+      phase_error_us = 0.5f * (float)phase_error_ticks;  // 0.5 µs per tick
+      
+      // Reset measurement flags
+      waiting_for_imu0 = false;
+      imu0_timestamp = 0;
+    }
 
-    // Phase error in ticks (±32767 range), convert to microseconds
-    phase_error_ticks = (int16_t)(last50 - last1);     // 50Hz time - 1Hz time
-    phase_error_us = 0.5f * (float)phase_error_ticks;  // 0.5 µs per tick
-
-    // --- Fine correction logic can be added here ---
-    // This runs every 500µs (2kHz) to monitor and correct synchronization
+    // If new GPS PPS arrived in fine mode, start new measurement
+    if (f1 && fine_measurement_active) {
+      gps_timestamp = t1_tick;
+      waiting_for_imu0 = true;
+      imu0_timestamp = 0;  // Reset previous measurement
+    }
   }
 }
 
@@ -365,14 +380,26 @@ void loop() {
       Serial.println(" ms)");
     }
     else {
-      Serial.print(" Course GPS offset: ");
+      Serial.print(" Fine correction - GPS offset: ");
       Serial.print(gps_imu_offset);
-      Serial.print(" Fine correction - Phase Error: ");
+      Serial.print(" Phase Error: ");
       Serial.print(phase_error_us);
       Serial.print(" µs (");
       Serial.print(phase_error_ticks);
       Serial.print(" ticks) IMU: ");
-      Serial.println(IMU_pulse_count);
+      Serial.print(IMU_pulse_count);
+      
+      // Show measurement status
+      if (fine_measurement_active) {
+        Serial.print(" [Active");
+        if (waiting_for_imu0) {
+          Serial.print(", waiting IMU0");
+        } else if (imu0_timestamp != 0) {
+          Serial.print(", waiting GPS");
+        }
+        Serial.print("]");
+      }
+      Serial.println();
     }
 
     // Debug interrupt status
@@ -418,6 +445,24 @@ ISR(INT7_vect) {
   // if (IMU_pulse_count == 0) course_correction_flag = false;
 
   if (!gps_connected) gps_connected = true;
+  
+  // Handle case where IMU count 0 occurred before this GPS PPS (IMU leading scenario)
+  if (fine_measurement_active && !waiting_for_imu0 && imu0_timestamp != 0) {
+    // We already have an IMU count 0 timestamp, measure time from that to this GPS PPS
+    int32_t time_diff_ticks = (int32_t)t1_tick - (int32_t)imu0_timestamp;
+    
+    // Handle timer overflow case
+    if (time_diff_ticks < 0) {
+      time_diff_ticks += 65536;
+    }
+    
+    // In this case, GPS is lagging behind IMU, so phase error is negative
+    phase_error_ticks = -(int16_t)time_diff_ticks;
+    phase_error_us = 0.5f * (float)phase_error_ticks;
+    
+    // Reset for next measurement
+    imu0_timestamp = 0;
+  }
 }
 
 
@@ -449,10 +494,22 @@ ISR(INT5_vect) {
     IMU_pulse_count = 0;
     pps_width_count = 0;
     pulse_count_for_sim_pps_led = 0;
+    
+    // Capture timestamp for fine correction measurement when count resets to 0
+    if (fine_measurement_active) {
+      if (waiting_for_imu0) {
+        // Expected case: GPS PPS occurred first, now we get IMU count 0
+        imu0_timestamp = TCNT3;  // Capture precise timestamp when IMU count becomes 0
+      } else {
+        // Alternative case: IMU count 0 occurs first, store it for when GPS PPS comes
+        imu0_timestamp = TCNT3;
+        waiting_for_imu0 = false;  // Mark that we have IMU timestamp, waiting for GPS
+      }
+    }
   }
 
 
-  if (pulse_count_for_sim_pps_led >= 25 + course_correction_count) { // toggle every 20ms*25=500ms
+  if (pulse_count_for_sim_pps_led >= (unsigned int)(25 + course_correction_count)) { // toggle every 20ms*25=500ms
     CLR(PORTF, HUB_CNTRL_PIN_2);
     
   }
