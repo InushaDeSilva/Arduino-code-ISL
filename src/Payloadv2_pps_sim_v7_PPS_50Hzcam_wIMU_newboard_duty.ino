@@ -282,7 +282,7 @@ void setup() {
   SET(DDRF, HUB_CNTRL_PIN_1);
   SET(DDRF, HUB_CNTRL_PIN_2);
   SET(DDRF, HUB_CNTRL_PIN_3);
-  CLR(DDRE, GPS_PPS_PIN); //PORTJ PK0
+  // CLR(DDRE, GPS_PPS_PIN); //PORTJ PK0 // leave this floating so there is not issue with the level converter
   CLR(DDRE, RTC_PPS_PIN); //PORTJ PK1
   //DDRJ |= B00101000;  // Set using DDR regiter for non mapped pins
 
@@ -405,7 +405,7 @@ void loop() {
         Serial.print(" µs)");
         gps_pps_tick_valid = false;  // Clear flag after printing
       }
-      
+
       // Show measurement status
       if (fine_measurement_active) {
         Serial.print(" [Active");
@@ -480,26 +480,27 @@ ISR(INT7_vect) {
     // Reset for next measurement
     imu0_timestamp = 0;
   }
-  
+
   // Measure time between GPS PPS pulses for tick verification
   if (gps_pps_tick_previous != 0) {
     // Calculate ticks between GPS PPS pulses (accounting for overflow)
     uint32_t current_ticks = t1_tick;
     uint32_t prev_ticks = gps_pps_tick_previous;
-    
+
     // Add overflow compensation (Timer3 is 16-bit, overflows at 65536)
     current_ticks += (uint32_t)gps_pps_overflow_count * 65536UL;
-    
+
     if (current_ticks >= prev_ticks) {
       gps_pps_tick_count = current_ticks - prev_ticks;
-    } else {
+    }
+    else {
       // Handle rare case where we miss overflow count
       gps_pps_tick_count = (current_ticks + 65536UL) - prev_ticks;
     }
-    
+
     gps_pps_tick_valid = true;
   }
-  
+
   // Store current tick for next measurement
   gps_pps_tick_previous = t1_tick;
   gps_pps_overflow_count = 0;  // Reset overflow counter
